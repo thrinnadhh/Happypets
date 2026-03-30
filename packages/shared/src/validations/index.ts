@@ -4,7 +4,7 @@
  */
 
 import { z } from 'zod';
-import { UserRole, PaymentMethod, ProductCategory } from '../types/index.js'; // fixed import
+import { PaymentMethod, ProductCategory } from '../types/index';
 
 // ============================================================================
 // AUTH SCHEMAS
@@ -22,11 +22,11 @@ export const registerSchema = z
     confirm_password: z.string(),
     full_name: z.string().min(2, 'Name must be at least 2 characters'),
     phone: z.string().regex(/^[0-9]{10}$/, 'Invalid phone number'),
-    agree_terms: z.boolean().refine((val) => val, {
+    agree_terms: z.boolean().refine((val: boolean) => val, {
       message: 'You must agree to the terms',
     }),
   })
-  .refine((data) => data.password === data.confirm_password, {
+  .refine((data: any) => data.password === data.confirm_password, {
     message: "Passwords don't match",
     path: ['confirm_password'],
   });
@@ -37,7 +37,7 @@ export const changePasswordSchema = z
     new_password: z.string().min(8),
     confirm_password: z.string(),
   })
-  .refine((data) => data.new_password === data.confirm_password, {
+  .refine((data: any) => data.new_password === data.confirm_password, {
     message: "Passwords don't match",
     path: ['confirm_password'],
   });
@@ -197,7 +197,7 @@ export const createAdminSchema = z
     phone: z.string().regex(/^[0-9]{10}$/),
     shop_id: z.string(),
   })
-  .refine((data) => data.password === data.confirm_password, {
+  .refine((data: any) => data.password === data.confirm_password, {
     message: "Passwords don't match",
     path: ['confirm_password'],
   });

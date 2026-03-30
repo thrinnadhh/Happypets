@@ -1,98 +1,66 @@
-/**
- * Suspended Account Page
- * Shown when user account has been suspended by SuperAdmin
- * Server component - fetches suspension reason
- */
-
-import { Metadata } from 'next';
-import { redirect } from 'next/navigation';
-import { getUser } from '@/lib/supabase/server';
-import { logoutAction } from '@/app/actions/auth';
+import Link from "next/link";
+import { Button } from "@/components/ui/button";
+import { ShieldX, Mail } from "lucide-react";
+import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: 'Account Suspended',
-  robots: {
-    index: false,
-    follow: false,
-  },
+  title: "Account Suspended — Happypets",
 };
 
-export default async function SuspendedPage() {
-  const user = await getUser();
-
-  // If user is not suspended, redirect to home
-  if (!user || user.status !== 'suspended') {
-    redirect('/');
-  }
-
-  const suspensionReason = user.suspension_reason || 
-    'Your account has been suspended. Please contact support for more information.';
+export default function SuspendedPage({
+  searchParams,
+}: {
+  searchParams?: { reason?: string };
+}): JSX.Element {
+  const reason = searchParams?.reason;
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
-      <div className="max-w-md w-full bg-white rounded-lg shadow-md p-8 text-center">
-        {/* Warning Icon */}
-        <div className="mb-6">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-red-100 rounded-full">
-            <svg
-              className="w-8 h-8 text-red-600"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M12 8v4m0 4v.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-              />
-            </svg>
-          </div>
+    <div className="min-h-screen bg-[#FDF6EC] flex items-center justify-center px-6">
+      <div className="max-w-md w-full text-center space-y-6">
+        {/* Icon */}
+        <div className="w-24 h-24 bg-red-100 rounded-full flex items-center justify-center mx-auto shadow-inner">
+          <ShieldX className="w-12 h-12 text-red-600" />
         </div>
 
         {/* Heading */}
-        <h1 className="text-2xl font-bold text-gray-900 mb-2">
-          Account Suspended
-        </h1>
+        <div>
+          <h1 className="text-2xl font-bold text-foreground">Account Suspended</h1>
+          <p className="text-muted-foreground mt-2 text-sm leading-relaxed">
+            Your Happypets account has been suspended and you are unable to access the platform.
+          </p>
+        </div>
 
         {/* Reason */}
-        <div className="mb-6 text-gray-600">
-          <p className="text-sm mb-4">
-            {suspensionReason}
-          </p>
+        {reason && (
+          <div className="bg-red-50 border border-red-200 rounded-2xl p-5 text-left">
+            <p className="text-xs font-semibold text-red-700 uppercase tracking-wider mb-2">Reason</p>
+            <p className="text-sm text-red-800">{decodeURIComponent(reason)}</p>
+          </div>
+        )}
 
-          <p className="text-xs text-gray-500">
-            If you believe this is a mistake or have any questions, please contact our support team.
+        {/* Contact */}
+        <div className="bg-white border border-gray-200 rounded-2xl p-5 shadow-sm space-y-3">
+          <p className="text-sm text-muted-foreground">
+            If you believe this is a mistake or would like to appeal, please contact our support team.
           </p>
-        </div>
-
-        {/* Contact Info */}
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
-          <p className="text-sm text-gray-700">
-            <span className="font-semibold">Support Email:</span>
-            <br />
-            <a
-              href="mailto:support@thehappypets.in"
-              className="text-blue-600 hover:text-blue-700 underline"
-            >
-              support@thehappypets.in
-            </a>
-          </p>
-        </div>
-
-        {/* Sign Out Button */}
-        <form action={logoutAction}>
-          <button
-            type="submit"
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition"
+          <a
+            href="mailto:support@thehappypets.in"
+            className="flex items-center justify-center gap-2 text-primary font-medium text-sm hover:underline"
           >
+            <Mail className="w-4 h-4" />
+            support@thehappypets.in
+          </a>
+        </div>
+
+        {/* Sign out */}
+        <form action="/api/auth/signout" method="POST">
+          <Button type="submit" variant="outline" className="w-full gap-2">
             Sign Out
-          </button>
+          </Button>
         </form>
 
-        {/* Footer Note */}
-        <p className="text-xs text-gray-400 mt-6">
-          Your account will remain suspended until further notice.
+        <p className="text-xs text-muted-foreground">
+          © {new Date().getFullYear()} Happypets
         </p>
       </div>
     </div>

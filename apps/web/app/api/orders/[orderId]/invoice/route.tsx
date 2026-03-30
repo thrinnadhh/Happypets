@@ -2,7 +2,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { renderToBuffer } from '@react-pdf/renderer';
 import { createServerClient } from '@/lib/supabase/server';
-import { GSTInvoice } from '@repo/shared/lib/invoice';
+import { GSTInvoice } from '@/lib/invoice';
 
 export async function GET(
   req: NextRequest,

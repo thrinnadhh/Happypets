@@ -5,7 +5,7 @@
  */
 
 import { cookies } from 'next/headers';
-import { createServerClient } from '@supabase/ssr';
+import { createServerClient as createSupabaseSSRClient } from '@supabase/ssr';
 import { redirect } from 'next/navigation';
 import type { Database } from '@/lib/database.types';
 import type { Profile } from '@happypets/shared';
@@ -15,13 +15,10 @@ import { isSessionBlacklisted } from '@/lib/redis';
 
 const logger = getLogger('supabase:server');
 
-/**
- * Create Supabase server client with cookies
- */
-const createClient = () => {
+export const createServerClient = () => {
   const cookieStore = cookies();
 
-  return createServerClient<Database>(
+  return createSupabaseSSRClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
@@ -31,7 +28,7 @@ const createClient = () => {
         },
         setAll(cookiesToSet) {
           try {
-            cookiesToSet.forEach(({ name, value, options }) =>
+            cookiesToSet.forEach(({ name, value, options }: any) =>
               cookieStore.set(name, value, options)
             );
           } catch (error) {
@@ -49,7 +46,7 @@ const createClient = () => {
  */
 export const getSession = async () => {
   try {
-    const supabase = createClient();
+    const supabase = createServerClient();
     const {
       data: { session },
     } = await supabase.auth.getSession();
@@ -68,7 +65,7 @@ export const getSession = async () => {
  */
 export const getUser = async (): Promise<Profile | null> => {
   try {
-    const supabase = createClient();
+    const supabase = createServerClient();
 
     // Get session
     const {
@@ -91,32 +88,38 @@ export const getUser = async (): Promise<Profile | null> => {
     }
 
     // Fetch user profile
-    const { data: profile, error } = await supabase
-      .from('user_profiles')
+    const { data: dbProfile, error } = await supabase
+      .from('profiles')
       .select('*')
-      .eq('user_id', userId)
+      .eq('id', userId)
       .single();
 
-    if (error || !profile) {
+    if (error || !dbProfile) {
       logger.error(`Profile not found for user ${userId}:`, error);
       return null;
     }
 
-    // Check if suspended
-    if (profile.status === UserStatus.SUSPENDED) {
+    // Check if suspended (is_active is false)
+    if (!dbProfile.is_active) {
       logger.info(`Suspended user ${userId} attempted access`);
       await supabase.auth.signOut();
       return null;
     }
 
-    // Check if deleted
-    if (profile.status === UserStatus.DELETED) {
-      logger.info(`Deleted user ${userId} attempted access`);
-      await supabase.auth.signOut();
-      return null;
-    }
+    // Map to shared Profile
+    const profile: Profile = {
+      id: dbProfile.id,
+      user_id: dbProfile.id,
+      full_name: dbProfile.full_name,
+      phone: dbProfile.phone || '',
+      role: dbProfile.role as UserRole,
+      status: dbProfile.is_active ? UserStatus.ACTIVE : UserStatus.SUSPENDED,
+      avatar_url: dbProfile.avatar_url || undefined,
+      created_at: dbProfile.created_at,
+      updated_at: dbProfile.updated_at,
+    };
 
-    return profile as Profile;
+    return profile;
   } catch (error) {
     logger.error('Error in getUser:', error);
     return null;
@@ -185,7 +188,7 @@ export const createServiceRoleClient = () => {
     throw new Error('SUPABASE_SERVICE_ROLE_KEY not configured');
   }
 
-  return createServerClient<Database>(
+  return createSupabaseSSRClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY,
     {
@@ -199,4 +202,4 @@ export const createServiceRoleClient = () => {
   );
 };
 
-export default createClient;
+export default createServerClient;

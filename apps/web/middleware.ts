@@ -8,8 +8,25 @@ import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 import { updateSession } from '@/lib/supabase/middleware';
 import { getLogger } from '@/lib/logger';
+import { redis } from '@/lib/redis';
+import { Ratelimit } from '@upstash/ratelimit';
 
 const logger = getLogger('middleware');
+
+// Rate limiters
+const authLimit = new Ratelimit({
+  redis,
+  limiter: Ratelimit.slidingWindow(5, '60 s'),
+  analytics: true,
+  prefix: 'rl:auth',
+});
+
+const checkoutLimit = new Ratelimit({
+  redis,
+  limiter: Ratelimit.slidingWindow(3, '60 s'),
+  analytics: true,
+  prefix: 'rl:checkout',
+});
 
 // Routes that don't need protection
 const PUBLIC_ROUTES = [
@@ -67,12 +84,23 @@ export async function middleware(request: NextRequest) {
   }
 
   // Update session (refresh cookies, check blacklist, validate JWT)
-  // This runs for ALL routes including /api to ensure suspended users are blocked
   const response = await updateSession(request);
 
-  // For API routes, session update is sufficient (blacklist check is in updateSession)
-  if (pathname.startsWith('/api')) {
-    return response;
+  // Rate Limiting for sensitive routes
+  const ip = request.ip ?? '127.0.0.1';
+  
+  if (pathname.includes('/login') || pathname.includes('/register')) {
+    const { success } = await authLimit.limit(ip);
+    if (!success) {
+      return NextResponse.json({ error: 'Too many attempts' }, { status: 429 });
+    }
+  }
+
+  if (pathname.startsWith('/checkout')) {
+    const { success } = await checkoutLimit.limit(ip);
+    if (!success) {
+      return NextResponse.json({ error: 'Checkout limit reached' }, { status: 429 });
+    }
   }
 
   // Get session info from cookies

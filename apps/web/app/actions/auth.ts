@@ -1,17 +1,28 @@
 /**
  * Server Actions for Authentication
- * Handles login, register, logout, and profile updates
+ * Handles login, register, logout, profile updates, and security
  */
 
 'use server';
 
 import { redirect } from 'next/navigation';
 import { headers } from 'next/headers';
-import { createClient } from '@/lib/supabase/server';
-import { loginSchema, registerSchema } from '@happypets/shared';
-import type { LoginInput, RegisterInput } from '@happypets/shared';
+import { revalidatePath } from 'next/cache';
+import createClient, { getUser, getSession } from '@/lib/supabase/server';
+import { 
+  loginSchema, 
+  registerSchema, 
+  changePasswordSchema,
+  UserRole,
+  UserStatus
+} from '@happypets/shared';
+import type { 
+  LoginInput, 
+  RegisterInput, 
+  ChangePasswordInput 
+} from '@happypets/shared';
 import { getLogger } from '@/lib/logger';
-import { rateLimit } from '@/lib/redis';
+import { rateLimit, clearCart } from '@/lib/redis';
 
 const logger = getLogger('auth:actions');
 
@@ -28,9 +39,24 @@ const getClientIp = async (): Promise<string> => {
 };
 
 /**
- * Login user with rate limiting
+ * Determine redirect path based on user role
  */
-export const loginAction = async (input: LoginInput) => {
+const getRedirectPath = (role: UserRole): string => {
+  switch (role) {
+    case UserRole.SUPERADMIN:
+      return '/superadmin/dashboard';
+    case UserRole.ADMIN:
+      return '/admin/dashboard';
+    case UserRole.CUSTOMER:
+    default:
+      return '/';
+  }
+};
+
+/**
+ * Login user with rate limiting and role-based redirection
+ */
+export async function loginAction(input: LoginInput) {
   try {
     const validatedInput = loginSchema.parse(input);
 
@@ -68,25 +94,56 @@ export const loginAction = async (input: LoginInput) => {
       };
     }
 
-    logger.info(`User ${data.user.id} logged in`);
+    // Fetch profile to check status and determine redirect
+    const { data: profile, error: profileError } = await supabase
+      .from('profiles')
+      .select('role, is_active')
+      .eq('id', data.user.id)
+      .single();
 
+    if (profileError || !profile) {
+      logger.error(`Profile not found for user ${data.user.id}`);
+      return {
+        success: false,
+        error: 'User profile not found. Please contact support.',
+      };
+    }
+
+    // Check account status
+    if (!profile.is_active) {
+      await supabase.auth.signOut();
+      return {
+        success: false,
+        error: 'Your account has been suspended. Please contact support.',
+      };
+    }
+
+    logger.info(`User ${data.user.id} logged in with role ${profile.role}`);
+
+    // Redirect based on role
+    const redirectPath = getRedirectPath(profile.role as UserRole);
+    
+    // In Next.js Server Actions, we return the path and let the client handle redirect 
+    // OR we can use redirect() but it must be the last thing.
+    // For better DX in client components, we'll return it.
     return {
       success: true,
-      user: data.user,
+      redirect: redirectPath,
+      user: { ...data.user, role: profile.role },
     };
-  } catch (error) {
+  } catch (error: any) {
     logger.error('Login action error:', error);
     return {
       success: false,
-      error: 'An error occurred during login',
+      error: error.message || 'An error occurred during login',
     };
   }
-};
+}
 
 /**
  * Register new user with rate limiting
  */
-export const registerAction = async (input: RegisterInput) => {
+export async function registerAction(input: RegisterInput) {
   try {
     const validatedInput = registerSchema.parse(input);
 
@@ -95,7 +152,6 @@ export const registerAction = async (input: RegisterInput) => {
     const rateLimitResult = await rateLimit(clientIp, 5, 60);
 
     if (!rateLimitResult.allowed) {
-      logger.warn(`Rate limit exceeded for registration from IP ${clientIp}`);
       return {
         success: false,
         error: 'Too many registration attempts. Please try again later.',
@@ -105,6 +161,7 @@ export const registerAction = async (input: RegisterInput) => {
     const supabase = createClient();
 
     // Sign up with Supabase Auth
+    // Note: Profiles are created via database triggers on auth.users insert
     const { error: signUpError, data } = await supabase.auth.signUp({
       email: validatedInput.email,
       password: validatedInput.password,
@@ -118,17 +175,16 @@ export const registerAction = async (input: RegisterInput) => {
 
     if (signUpError) {
       logger.warn(`Registration failed for ${validatedInput.email}: ${signUpError.message}`);
-      // Return generic message to prevent account enumeration (HIGH-3)
       return {
         success: false,
-        error: 'Registration failed. Please check your details and try again.',
+        error: signUpError.message,
       };
     }
 
     if (!data.user) {
       return {
         success: false,
-        error: 'Registration failed. Please check your details and try again.',
+        error: 'Registration failed. Please try again.',
       };
     }
 
@@ -136,34 +192,112 @@ export const registerAction = async (input: RegisterInput) => {
 
     return {
       success: true,
-      user: data.user,
+      message: 'Registration successful! Please check your email for verification.',
     };
-  } catch (error) {
+  } catch (error: any) {
     logger.error('Register action error:', error);
     return {
       success: false,
-      error: 'An error occurred during registration',
+      error: error.message || 'An error occurred during registration',
     };
   }
-};
+}
 
 /**
- * Logout user and redirect to login
+ * logoutAction: Sign out user and clear cache
  */
-export const logoutAction = async () => {
+export async function logoutAction() {
   try {
-    const supabase = createClient();
-    const { error } = await supabase.auth.signOut();
-
-    if (error) {
-      logger.error('Logout error:', error);
+    const session = await getSession();
+    if (session?.user?.id) {
+      // Clear user cart from Redis on logout
+      await clearCart(session.user.id);
     }
 
+    const supabase = createClient();
+    await supabase.auth.signOut();
+    
     logger.info('User logged out');
   } catch (error) {
     logger.error('Logout action error:', error);
   }
 
-  // redirect() throws internally, so this effectively never returns
+  revalidatePath('/', 'layout');
   redirect('/login');
-};
+}
+
+/**
+ * updateProfileAction: Update user metadata and profile table
+ */
+export async function updateProfileAction(formData: FormData) {
+  try {
+    const user = await getUser();
+    if (!user) return { success: false, error: 'Unauthorized' };
+
+    const full_name = formData.get('full_name') as string;
+    const phone = formData.get('phone') as string;
+
+    const supabase = createClient();
+
+    // Update profiles table
+    const { error: profileError } = await supabase
+      .from('profiles')
+      .update({ full_name, phone, updated_at: new Date().toISOString() })
+      .eq('id', user.id);
+
+    if (profileError) throw profileError;
+
+    // Update Auth metadata
+    await supabase.auth.updateUser({
+      data: { full_name, phone }
+    });
+
+    revalidatePath('/profile');
+    return { success: true, message: 'Profile updated successfully' };
+  } catch (error: any) {
+    logger.error('Update profile error:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * changePasswordAction: Securely update user password
+ */
+export async function changePasswordAction(input: ChangePasswordInput) {
+  try {
+    const validatedInput = changePasswordSchema.parse(input);
+    const supabase = createClient();
+
+    const { error } = await supabase.auth.updateUser({
+      password: validatedInput.new_password
+    });
+
+    if (error) throw error;
+
+    return { success: true, message: 'Password changed successfully' };
+  } catch (error: any) {
+    logger.error('Change password error:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * verifyEmailAction: Handle email verification tokens
+ */
+export async function verifyEmailAction(token: string, type: 'signup' | 'recovery' = 'signup') {
+  try {
+    const supabase = createClient();
+    const { error } = await supabase.auth.verifyOtp({
+      token_hash: token,
+      type: type === 'signup' ? 'signup' : 'recovery',
+    });
+
+    if (error) throw error;
+
+    return { success: true, redirect: '/login?verified=true' };
+  } catch (error: any) {
+    logger.error('Email verification error:', error);
+    return { success: false, error: error.message };
+  }
+}
+

@@ -5,7 +5,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import createServerClient from '@/lib/supabase/server';
 import { rateLimit } from '@/lib/redis';
 import { getLogger } from '@/lib/logger';
 
@@ -27,11 +27,11 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized', code: 'UNAUTHORIZED' }, { status: 401 });
     }
 
-    const supabase = createClient();
+    const supabase = createServerClient();
     const { data: wishlist, error } = await supabase
-      .from('wishlist')
+      .from('wishlist_items')
       .select('*, products(*)')
-      .eq('user_id', user.user_id);
+      .eq('user_id', (user as any).id);
 
     if (error) {
       logger.error('Wishlist fetch error:', error);
@@ -61,15 +61,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Product ID required', code: 'INVALID_INPUT' }, { status: 400 });
     }
 
-    const supabase = createClient();
+    const supabase = createServerClient();
 
     // Check if product exists in wishlist
-    const { data: existing, error: checkError } = await supabase
-      .from('wishlist')
+    const { data: existing, error: checkError } = await (supabase
+      .from('wishlist_items')
       .select('id')
-      .eq('user_id', user.user_id)
+      .eq('user_id', (user as any).id)
       .eq('product_id', productId)
-      .maybeSingle();
+      .maybeSingle() as any);
 
     if (checkError) {
       logger.error('Wishlist check error:', checkError);
@@ -79,9 +79,9 @@ export async function POST(request: NextRequest) {
     if (existing) {
       // Remove from wishlist
       const { error: deleteError } = await supabase
-        .from('wishlist')
+        .from('wishlist_items')
         .delete()
-        .eq('id', existing.id);
+        .eq('id', (existing as any).id);
 
       if (deleteError) {
         logger.error('Wishlist delete error:', deleteError);
@@ -91,16 +91,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: true, action: 'removed' });
     } else {
       // Add to wishlist
-      const { data: product } = await supabase.from('products').select('id').eq('id', productId).single();
+      const { data: product } = await (supabase as any).from('products').select('id').eq('id', productId).single();
       if (!product) return NextResponse.json({ error: 'Product not found', code: 'NOT_FOUND' }, { status: 404 });
 
-      const { error: insertError } = await supabase
-        .from('wishlist')
+      const { error: insertError } = await (supabase
+        .from('wishlist_items')
         .insert({
-          user_id: user.user_id,
+          user_id: (user as any).id,
           product_id: productId,
-          added_at: new Date().toISOString(),
-        });
+        } as any) as any);
 
       if (insertError) {
         logger.error('Wishlist insert error:', insertError);
