@@ -1,8 +1,18 @@
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { fetchProducts } from "@/api/mockApi";
-import { defaultProducts } from "@/data/mockData";
+import { createContext, startTransition, useContext, useEffect, useMemo, useState } from "react";
+import {
+  DEFAULT_PRODUCT_POSITION,
+  getDefaultDisplaySection,
+  sortProductsByPosition,
+  sortTags,
+} from "@/data/catalog";
 import { Product } from "@/types";
-import { deleteProductFromSupabase, upsertProductInSupabase } from "@/lib/supabase";
+import {
+  createProductInSupabase,
+  deleteProductFromSupabase,
+  fetchProductsFromSupabase,
+  isSupabaseConfigured,
+  updateProductInSupabase,
+} from "@/lib/supabase";
 
 type ProductInput = Omit<Product, "id" | "soldCount" | "revenue">;
 
@@ -16,12 +26,17 @@ type CatalogContextValue = {
   getRelatedProducts: (productId: string) => Product[];
 };
 
-const STORAGE_KEY = "happypets-products";
 const CatalogContext = createContext<CatalogContextValue | undefined>(undefined);
 
 function normalizeProduct(product: Product): Product {
   return {
     ...product,
+    displaySection: product.displaySection ?? getDefaultDisplaySection(product.category),
+    position:
+      typeof product.position === "number" && Number.isFinite(product.position) && product.position > 0
+        ? product.position
+        : DEFAULT_PRODUCT_POSITION,
+    tags: sortTags(product.tags ?? []),
     rating: typeof product.rating === "number" ? product.rating : 4.8,
     gallery:
       product.gallery?.length
@@ -39,50 +54,44 @@ export function CatalogProvider({ children }: { children: React.ReactNode }): JS
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    const initial = raw ? (JSON.parse(raw) as Product[]) : defaultProducts;
-
-    fetchProducts(initial)
-      .then((response) => setProducts(response.map(normalizeProduct)))
-      .finally(() => setLoading(false));
-  }, []);
-
-  useEffect(() => {
-    if (!loading) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(products));
-    }
-  }, [loading, products]);
-
-  const createProduct = async (input: ProductInput): Promise<void> => {
-    const nextProduct: Product = {
-      ...input,
-      id: `${input.category.toLowerCase()}-${Date.now()}`,
-      soldCount: 0,
-      revenue: 0,
+    const loadProducts = async (): Promise<void> => {
+      try {
+        const sourceProducts = isSupabaseConfigured ? await fetchProductsFromSupabase() : [];
+        const normalized = sourceProducts.map(normalizeProduct);
+        startTransition(() => {
+          setProducts(sortProductsByPosition(normalized));
+        });
+      } finally {
+        setLoading(false);
+      }
     };
 
-    const normalized = normalizeProduct(nextProduct);
-    setProducts((current) => [normalized, ...current]);
-    await upsertProductInSupabase(normalized);
+    void loadProducts();
+  }, []);
+
+  const createProduct = async (input: ProductInput): Promise<void> => {
+    const created = normalizeProduct(await createProductInSupabase(input));
+    startTransition(() => {
+      setProducts((current) => sortProductsByPosition([...current, created]));
+    });
   };
 
   const updateProduct = async (id: string, input: ProductInput): Promise<void> => {
-    const existing = products.find((product) => product.id === id);
-    if (!existing) return;
-
-    const nextProduct: Product = {
-      ...existing,
-      ...input,
-    };
-
-    const normalized = normalizeProduct(nextProduct);
-    setProducts((current) => current.map((product) => (product.id === id ? normalized : product)));
-    await upsertProductInSupabase(normalized);
+    const updated = normalizeProduct(await updateProductInSupabase(id, input));
+    startTransition(() => {
+      setProducts((current) =>
+        sortProductsByPosition(
+          current.map((product) => (product.id === id ? updated : product)),
+        ),
+      );
+    });
   };
 
   const deleteProduct = async (id: string): Promise<void> => {
-    setProducts((current) => current.filter((product) => product.id !== id));
     await deleteProductFromSupabase(id);
+    startTransition(() => {
+      setProducts((current) => current.filter((product) => product.id !== id));
+    });
   };
 
   const getProductById = (productId: string): Product | undefined =>
@@ -92,7 +101,9 @@ export function CatalogProvider({ children }: { children: React.ReactNode }): JS
     const base = getProductById(productId);
     if (!base) return [];
 
-    return products.filter((product) => product.category === base.category && product.id !== productId);
+    return sortProductsByPosition(
+      products.filter((product) => product.category === base.category && product.id !== productId),
+    ).slice(0, 8);
   };
 
   const value = useMemo(

@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { ProtectedRoute } from "@/components/common/ProtectedRoute";
 import { AppointmentsPage } from "@/pages/customer/AppointmentsPage";
 import { ContactPage } from "@/pages/customer/ContactPage";
+import { CategoryPage } from "@/pages/customer/CategoryPage";
 import { FavoritesPage } from "@/pages/customer/FavoritesPage";
 import { CustomerHomePage } from "@/pages/customer/HomePage";
 import { ProductDetailPage } from "@/pages/customer/ProductDetailPage";
@@ -29,6 +30,14 @@ export default function App(): JSX.Element {
           element={
             <ProtectedRoute allowedRoles={["customer"]}>
               <ProductDetailPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/category/:type"
+          element={
+            <ProtectedRoute allowedRoles={["customer"]}>
+              <CategoryPage />
             </ProtectedRoute>
           }
         />

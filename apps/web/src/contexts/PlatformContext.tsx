@@ -1,5 +1,11 @@
-import { createContext, useContext, useMemo, useState } from "react";
-import { defaultAdmins } from "@/data/mockData";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import {
+  approveAdminInSupabase,
+  fetchAdminsFromSupabase,
+  rejectAdminInSupabase,
+  revokeAdminInSupabase,
+} from "@/lib/supabase";
+import { useAuth } from "@/contexts/AuthContext";
 import { AdminRecord } from "@/types";
 
 type PlatformContextValue = {
@@ -11,18 +17,49 @@ type PlatformContextValue = {
 const PlatformContext = createContext<PlatformContextValue | undefined>(undefined);
 
 export function PlatformProvider({ children }: { children: React.ReactNode }): JSX.Element {
-  const [admins, setAdmins] = useState<AdminRecord[]>(defaultAdmins);
+  const { role, user } = useAuth();
+  const [admins, setAdmins] = useState<AdminRecord[]>([]);
+
+  const refreshAdmins = async (): Promise<void> => {
+    if (role !== "superadmin" || !user) {
+      setAdmins([]);
+      return;
+    }
+
+    try {
+      setAdmins(await fetchAdminsFromSupabase());
+    } catch {
+      setAdmins([]);
+    }
+  };
+
+  useEffect(() => {
+    void refreshAdmins();
+  }, [role, user?.id]);
 
   const approveAdmin = (id: string): void => {
     setAdmins((current) =>
       current.map((admin) => (admin.id === id ? { ...admin, status: "Approved" } : admin)),
     );
+
+    void approveAdminInSupabase(id).then(refreshAdmins).catch(refreshAdmins);
   };
 
   const revokeAdmin = (id: string): void => {
+    const currentStatus = admins.find((admin) => admin.id === id)?.status;
     setAdmins((current) =>
-      current.map((admin) => (admin.id === id ? { ...admin, status: "Pending" } : admin)),
+      current.map((admin) =>
+        admin.id === id
+          ? { ...admin, status: admin.status === "Pending" ? "Rejected" : "Revoked" }
+          : admin,
+      ),
     );
+
+    void (
+      currentStatus === "Pending" ? rejectAdminInSupabase(id) : revokeAdminInSupabase(id)
+    )
+      .then(refreshAdmins)
+      .catch(refreshAdmins);
   };
 
   const value = useMemo(

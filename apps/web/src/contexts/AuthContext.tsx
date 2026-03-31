@@ -1,6 +1,12 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { loginRequest } from "@/api/mockApi";
-import { LoginPayload, Role, User } from "@/types";
+import {
+  fetchCurrentUserFromSupabase,
+  signInWithSupabase,
+  signOutFromSupabase,
+  signUpWithSupabase,
+  supabase,
+} from "@/lib/supabase";
+import { LoginPayload, Role, SignupPayload, SignupResult, User } from "@/types";
 
 type AuthContextValue = {
   user: User | null;
@@ -8,12 +14,11 @@ type AuthContextValue = {
   token: string | null;
   loading: boolean;
   login: (payload: LoginPayload) => Promise<User>;
+  register: (payload: SignupPayload) => Promise<SignupResult>;
   logout: () => void;
 };
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
-
-const STORAGE_KEY = "happypets-auth";
 
 export function getDefaultRoute(user: User | null): string {
   if (!user) return "/login";
@@ -28,29 +33,104 @@ export function AuthProvider({ children }: { children: React.ReactNode }): JSX.E
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const raw = localStorage.getItem(STORAGE_KEY);
-
-    if (raw) {
-      const parsed = JSON.parse(raw) as { user: User; token: string };
-      setUser(parsed.user);
-      setToken(parsed.token);
+    if (!supabase) {
+      setLoading(false);
+      return;
     }
 
-    setLoading(false);
+    let active = true;
+
+    const syncUser = async (): Promise<void> => {
+      try {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+
+        if (!active) return;
+
+        if (!session) {
+          setUser(null);
+          setToken(null);
+          return;
+        }
+
+        const nextUser = await fetchCurrentUserFromSupabase();
+        if (!active) return;
+
+        setUser(nextUser);
+        setToken(session.access_token);
+      } catch {
+        if (!active) return;
+        setUser(null);
+        setToken(null);
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void syncUser();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!active) return;
+
+      if (!session) {
+        setUser(null);
+        setToken(null);
+        setLoading(false);
+        return;
+      }
+
+      void (async () => {
+        try {
+          const nextUser = await fetchCurrentUserFromSupabase();
+          if (!active) return;
+          setUser(nextUser);
+          setToken(session.access_token);
+        } catch {
+          if (!active) return;
+          setUser(null);
+          setToken(null);
+        } finally {
+          if (active) {
+            setLoading(false);
+          }
+        }
+      })();
+    });
+
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
   }, []);
 
   const login = async (payload: LoginPayload): Promise<User> => {
-    const response = await loginRequest(payload);
+    const response = await signInWithSupabase(payload);
     setUser(response.user);
-    setToken(response.token);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(response));
+    setToken(response.session.access_token);
     return response.user;
+  };
+
+  const register = async (payload: SignupPayload): Promise<SignupResult> => {
+    const response = await signUpWithSupabase(payload);
+    if (response.user) {
+      const {
+        data: { session },
+      } = await supabase!.auth.getSession();
+      setUser(response.user);
+      setToken(session?.access_token ?? null);
+    }
+    return response;
   };
 
   const logout = (): void => {
     setUser(null);
     setToken(null);
-    localStorage.removeItem(STORAGE_KEY);
+    void signOutFromSupabase();
   };
 
   const value = useMemo(
@@ -60,6 +140,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): JSX.E
       token,
       loading,
       login,
+      register,
       logout,
     }),
     [loading, token, user],

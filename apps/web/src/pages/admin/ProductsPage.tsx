@@ -8,6 +8,7 @@ import { ProductFormModal } from "@/components/products/ProductFormModal";
 import { DataTable } from "@/components/tables/DataTable";
 import { useAuth } from "@/contexts/AuthContext";
 import { useCatalog } from "@/contexts/CatalogContext";
+import { displaySectionLabels, productTagLabels, sortProductsByPosition } from "@/data/catalog";
 import { Product } from "@/types";
 
 const adminLinks = [
@@ -22,6 +23,15 @@ export function AdminProductsPage(): JSX.Element {
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const discountedCount = products.filter((product) => product.discount).length;
   const lowStockCount = products.filter((product) => product.quantity < 20).length;
+  const homeCount = products.filter((product) => product.displaySection === "Home").length;
+  const taggedCount = products.filter((product) => product.tags?.length).length;
+  const orderedProducts = sortProductsByPosition(products).sort((left, right) => {
+    if (left.displaySection !== right.displaySection) {
+      return left.displaySection.localeCompare(right.displaySection);
+    }
+
+    return left.position - right.position;
+  });
 
   if (loading) {
     return <Loader label="Loading product manager..." />;
@@ -46,7 +56,7 @@ export function AdminProductsPage(): JSX.Element {
                     <p className="text-sm font-semibold uppercase tracking-[0.18em] text-brand-700">Products</p>
                     <h1 className="mt-3 font-heading text-5xl font-semibold text-ink">Manage product catalog</h1>
                     <p className="mt-4 max-w-2xl text-sm leading-7 text-slate-600">
-                      Product creation stays in admin-only routes, with Supabase-ready image upload, preview, and pricing controls.
+                      Product creation stays in admin-only routes, with Supabase-ready image upload, preview, placement ordering, and tag-based storefront highlighting.
                     </p>
                   </div>
                   <button
@@ -60,9 +70,11 @@ export function AdminProductsPage(): JSX.Element {
                   </button>
                 </div>
 
-                <div className="mt-8 grid gap-4 md:grid-cols-3">
+                <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                   {[
                     ["Products", `${products.length}`],
+                    ["Home placements", `${homeCount}`],
+                    ["Tagged products", `${taggedCount}`],
                     ["Discounted SKUs", `${discountedCount}`],
                     ["Low stock", `${lowStockCount}`],
                   ].map(([label, value]) => (
@@ -76,7 +88,7 @@ export function AdminProductsPage(): JSX.Element {
 
               {products.length ? (
                 <DataTable
-                  rows={products}
+                  rows={orderedProducts}
                   columns={[
                     {
                       key: "name",
@@ -92,6 +104,25 @@ export function AdminProductsPage(): JSX.Element {
                       key: "category",
                       title: "Category",
                       render: (product) => product.category,
+                    },
+                    {
+                      key: "displaySection",
+                      title: "Display Section",
+                      render: (product) =>
+                        product.displaySection === "Home" ? "Home" : displaySectionLabels[product.displaySection],
+                    },
+                    {
+                      key: "position",
+                      title: "Position",
+                      render: (product) => product.position,
+                    },
+                    {
+                      key: "tags",
+                      title: "Tags",
+                      render: (product) =>
+                        product.tags?.length
+                          ? product.tags.map((tag) => productTagLabels[tag]).join(", ")
+                          : "None",
                     },
                     {
                       key: "quantity",

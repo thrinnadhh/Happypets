@@ -1,6 +1,10 @@
 export type Role = "customer" | "admin" | "superadmin";
 
-export type ProductCategory = "Dog" | "Cat" | "Fish";
+export type ProductCategory = "Dog" | "Cat" | "Fish" | "Hamster" | "Rabbit" | "Birds";
+
+export type DisplaySection = "Home" | ProductCategory;
+
+export type ProductTag = "recommended" | "trending" | "popular";
 
 export type User = {
   id: string;
@@ -14,6 +18,9 @@ export type Product = {
   id: string;
   name: string;
   category: ProductCategory;
+  displaySection: DisplaySection;
+  position: number;
+  tags?: ProductTag[];
   brand: string;
   image: string;
   gallery?: string[];
@@ -32,7 +39,7 @@ export type AdminRecord = {
   id: string;
   name: string;
   email: string;
-  status: "Approved" | "Active" | "Pending";
+  status: "Approved" | "Active" | "Pending" | "Rejected" | "Revoked";
   leaveDays: number;
   lastLogin: string;
 };
@@ -40,6 +47,21 @@ export type AdminRecord = {
 export type LoginPayload = {
   email: string;
   password: string;
+};
+
+export type SignupRole = "customer" | "admin";
+
+export type SignupPayload = {
+  name: string;
+  email: string;
+  password: string;
+  role: SignupRole;
+};
+
+export type SignupResult = {
+  user: User | null;
+  requiresEmailVerification: boolean;
+  message?: string;
 };
 
 export type CartItem = {

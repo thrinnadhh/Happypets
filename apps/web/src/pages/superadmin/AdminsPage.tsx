@@ -73,7 +73,7 @@ export function SuperAdminAdminsPage(): JSX.Element {
                       onClick={() => revokeAdmin(admin.id)}
                       className="rounded-full bg-rose-50 px-3 py-1 text-xs font-semibold text-rose-600"
                     >
-                      Revoke
+                      {admin.status === "Pending" ? "Reject" : "Revoke"}
                     </button>
                   </div>
                 ),

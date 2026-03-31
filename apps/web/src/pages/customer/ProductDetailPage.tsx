@@ -9,6 +9,7 @@ import { FavoriteButton } from "@/components/products/FavoriteButton";
 import { StarIcon } from "@/components/common/Icons";
 import { useCart } from "@/contexts/CartContext";
 import { useCatalog } from "@/contexts/CatalogContext";
+import { getCategoryPath, productTagLabels, productTagStyles, sortTags } from "@/data/catalog";
 
 export function ProductDetailPage(): JSX.Element {
   const { id } = useParams();
@@ -48,6 +49,7 @@ export function ProductDetailPage(): JSX.Element {
     : product.price;
   const gallery = product.gallery?.length ? product.gallery : [product.image];
   const rating = product.rating ?? 4.8;
+  const tags = sortTags(product.tags ?? []);
 
   return (
     <PageTransition className="min-h-screen bg-soft-grid">
@@ -87,6 +89,18 @@ export function ProductDetailPage(): JSX.Element {
                 <p className="text-sm font-semibold uppercase tracking-[0.18em] text-brand-700">{product.category}</p>
                 <h1 className="mt-3 font-heading text-5xl font-semibold leading-none text-ink">{product.name}</h1>
                 <p className="mt-3 text-sm uppercase tracking-[0.16em] text-slate-500">{product.brand}</p>
+                {tags.length ? (
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {tags.map((tag) => (
+                      <span
+                        key={tag}
+                        className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] ${productTagStyles[tag]}`}
+                      >
+                        {productTagLabels[tag]}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
               </div>
               <FavoriteButton productId={product.id} />
             </div>
@@ -168,6 +182,9 @@ export function ProductDetailPage(): JSX.Element {
             </div>
             <Link to="/customer/home" className="soft-button">
               Continue Shopping
+            </Link>
+            <Link to={getCategoryPath(product.category)} className="soft-button">
+              View {product.category}
             </Link>
           </div>
 

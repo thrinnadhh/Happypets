@@ -1,7 +1,16 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import {
+  displaySectionLabels,
+  displaySections,
+  productCategories,
+  productTagLabels,
+  productTags,
+  productTagStyles,
+  sortTags,
+} from "@/data/catalog";
 import { categoryBrands } from "@/data/mockData";
-import { Product, ProductCategory } from "@/types";
+import { Product, ProductCategory, ProductTag } from "@/types";
 import { uploadImageToSupabase } from "@/lib/supabase";
 
 type ProductFormInput = Omit<Product, "id" | "soldCount" | "revenue">;
@@ -9,6 +18,9 @@ type ProductFormInput = Omit<Product, "id" | "soldCount" | "revenue">;
 const emptyForm: ProductFormInput = {
   name: "",
   category: "Dog",
+  displaySection: "Dog",
+  position: 1,
+  tags: [],
   brand: categoryBrands.Dog[0],
   image: "",
   description: "",
@@ -66,7 +78,17 @@ export function ProductFormModal({
     setForm((current) => ({
       ...current,
       category,
+      displaySection: current.displaySection === current.category ? category : current.displaySection,
       brand: categoryBrands[category][0],
+    }));
+  };
+
+  const toggleTag = (tag: ProductTag): void => {
+    setForm((current) => ({
+      ...current,
+      tags: current.tags?.includes(tag)
+        ? current.tags.filter((value) => value !== tag)
+        : sortTags([...(current.tags ?? []), tag]),
     }));
   };
 
@@ -162,9 +184,9 @@ export function ProductFormModal({
                   onChange={(event) => handleCategoryChange(event.target.value as ProductCategory)}
                   className="input"
                 >
-                  <option>Dog</option>
-                  <option>Cat</option>
-                  <option>Fish</option>
+                  {productCategories.map((category) => (
+                    <option key={category}>{category}</option>
+                  ))}
                 </select>
               </label>
 
@@ -180,6 +202,69 @@ export function ProductFormModal({
                   ))}
                 </select>
               </label>
+
+              <label className="field">
+                <span>Display Section</span>
+                <select
+                  value={form.displaySection}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      displaySection: event.target.value as Product["displaySection"],
+                    }))
+                  }
+                  className="input"
+                >
+                  {displaySections.map((section) => (
+                    <option key={section} value={section}>
+                      {section === "Home" ? "Home" : displaySectionLabels[section]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="field">
+                <span>Position</span>
+                <input
+                  type="number"
+                  min="1"
+                  value={form.position}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      position: Math.max(1, Number(event.target.value) || 1),
+                    }))
+                  }
+                  className="input"
+                  required
+                />
+                <p className="text-xs text-slate-500">Lower numbers appear first in the selected section.</p>
+              </label>
+
+              <div className="field md:col-span-2">
+                <span>Tags</span>
+                <div className="flex flex-wrap gap-3">
+                  {productTags.map((tag) => {
+                    const active = form.tags?.includes(tag);
+
+                    return (
+                      <button
+                        key={tag}
+                        type="button"
+                        onClick={() => toggleTag(tag)}
+                        className={`cursor-pointer rounded-full border px-4 py-2 text-sm font-semibold transition ${
+                          active
+                            ? productTagStyles[tag]
+                            : "border-[#e7d9c3] bg-white text-slate-500 hover:border-brand-300 hover:text-brand-700"
+                        }`}
+                      >
+                        {productTagLabels[tag]}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-slate-500">Use tags to control homepage highlights and category-page filters.</p>
+              </div>
 
               <div className="field">
                 <span>Upload Image</span>
@@ -201,7 +286,11 @@ export function ProductFormModal({
                   </button>
                   <input
                     value={form.image}
-                    onChange={(event) => setForm((current) => ({ ...current, image: event.target.value }))}
+                    onChange={(event) => {
+                      const nextValue = event.target.value;
+                      setForm((current) => ({ ...current, image: nextValue }));
+                      setPreview(nextValue);
+                    }}
                     className="input flex-1"
                     placeholder="Paste image URL"
                     required

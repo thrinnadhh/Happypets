@@ -2,6 +2,7 @@ import { motion } from "framer-motion";
 import { PageTransition } from "@/components/common/PageTransition";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { useCatalog } from "@/contexts/CatalogContext";
+import { productCategories } from "@/data/catalog";
 
 const links = [
   { to: "/superadmin/dashboard", label: "Dashboard" },
@@ -15,7 +16,7 @@ export function SuperAdminAnalyticsPage(): JSX.Element {
   const byRevenue = [...products].sort((a, b) => b.revenue - a.revenue).slice(0, 4);
   const bySales = [...products].sort((a, b) => b.soldCount - a.soldCount).slice(0, 4);
   const totalRevenue = products.reduce((sum, product) => sum + product.revenue, 0);
-  const categoryPerformance = ["Dog", "Cat", "Fish"].map((category) => {
+  const categoryPerformance = productCategories.map((category) => {
     const categoryProducts = products.filter((product) => product.category === category);
     return {
       category,
