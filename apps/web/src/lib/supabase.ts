@@ -38,6 +38,8 @@ const supabaseUrl = getEnvValue("VITE_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_URL")
 const supabaseAnonKey = getEnvValue("VITE_SUPABASE_ANON_KEY", "NEXT_PUBLIC_SUPABASE_ANON_KEY");
 const supabaseBucket =
   getEnvValue("VITE_SUPABASE_BUCKET", "NEXT_PUBLIC_SUPABASE_BUCKET") ?? "product-images";
+const bannerBucket =
+  getEnvValue("VITE_SUPABASE_BANNER_BUCKET", "NEXT_PUBLIC_SUPABASE_BANNER_BUCKET") ?? "banners";
 const razorpayKeyId = getEnvValue("VITE_RAZORPAY_KEY_ID", "NEXT_PUBLIC_RAZORPAY_KEY_ID");
 
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
@@ -164,6 +166,16 @@ type CreateRazorpayOrderResponse = {
 
 type VerifyRazorpayPaymentResponse = {
   order: SupabaseOrderRow;
+};
+
+const IMAGE_MIME_TYPES: Record<string, string> = {
+  avif: "image/avif",
+  gif: "image/gif",
+  jpeg: "image/jpeg",
+  jpg: "image/jpeg",
+  png: "image/png",
+  svg: "image/svg+xml",
+  webp: "image/webp",
 };
 
 const PRODUCT_SELECT = `
@@ -511,6 +523,15 @@ function isMissingCartEnhancementColumnError(issue: unknown): boolean {
   return message.includes("selected") || isMissingProductEnhancementColumnError(issue);
 }
 
+function isMissingStorageBucketError(issue: unknown, bucketName: string): boolean {
+  if (!issue || typeof issue !== "object") {
+    return false;
+  }
+
+  const message = "message" in issue && typeof issue.message === "string" ? issue.message.toLowerCase() : "";
+  return message.includes(bucketName.toLowerCase()) && (message.includes("bucket") || message.includes("not found"));
+}
+
 function isMissingRowError(issue: unknown): boolean {
   if (!issue || typeof issue !== "object") {
     return false;
@@ -520,6 +541,33 @@ function isMissingRowError(issue: unknown): boolean {
   const message = "message" in issue && typeof issue.message === "string" ? issue.message.toLowerCase() : "";
 
   return code === "PGRST116" || message.includes("0 rows") || message.includes("no rows");
+}
+
+function isMissingTableError(issue: unknown, tableName: string): boolean {
+  if (!issue || typeof issue !== "object") {
+    return false;
+  }
+
+  const message = "message" in issue && typeof issue.message === "string" ? issue.message.toLowerCase() : "";
+  return (
+    message.includes(`public.${tableName}`.toLowerCase()) &&
+    (message.includes("schema cache") || message.includes("does not exist") || message.includes("relation"))
+  );
+}
+
+function resolveImageMimeType(file: Pick<File, "name" | "type">): string | null {
+  if (file.type?.startsWith("image/")) {
+    return file.type;
+  }
+
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  return IMAGE_MIME_TYPES[extension] ?? null;
+}
+
+function buildStoragePath(folder: string, file: Pick<File, "name">): string {
+  const rawExtension = file.name.split(".").pop()?.toLowerCase() ?? "jpg";
+  const extension = IMAGE_MIME_TYPES[rawExtension] ? rawExtension : "jpg";
+  return `${folder}/${Date.now()}-${crypto.randomUUID()}.${extension}`;
 }
 
 async function fetchCartBaseRows(
@@ -541,6 +589,9 @@ async function fetchCartBaseRows(
     const { data, error } = await query;
 
     if (error) {
+      if (isMissingTableError(error, "cart_items")) {
+        throw new Error("Cart database is not set up. Apply the Supabase cart migrations.");
+      }
       throw error;
     }
 
@@ -642,6 +693,11 @@ export async function uploadImageToSupabase(
   onProgress?: (value: number) => void,
 ): Promise<string> {
   const client = requireSupabaseClient();
+  const contentType = resolveImageMimeType(file);
+
+  if (!contentType) {
+    throw new Error("Invalid file. Please upload an image.");
+  }
 
   let progress = 8;
   onProgress?.(progress);
@@ -651,24 +707,96 @@ export async function uploadImageToSupabase(
     onProgress?.(progress);
   }, 120);
 
-  const extension = file.name.split(".").pop() ?? "jpg";
-  const path = `products/${Date.now()}-${Math.random().toString(36).slice(2)}.${extension}`;
+  const uploadAsset = async (bucketName: string, folder: string): Promise<string> => {
+    const path = buildStoragePath(folder, file);
+    const { error } = await client.storage.from(bucketName).upload(path, file, {
+      cacheControl: "3600",
+      contentType,
+      upsert: false,
+    });
 
-  const { error } = await client.storage.from(supabaseBucket).upload(path, file, {
-    cacheControl: "3600",
-    upsert: true,
-  });
+    if (error) {
+      throw error;
+    }
 
-  window.clearInterval(interval);
+    const { data } = client.storage.from(bucketName).getPublicUrl(path);
+    return data.publicUrl;
+  };
 
-  if (error) {
+  try {
+    const publicUrl = await uploadAsset(supabaseBucket, "products");
+    onProgress?.(100);
+    return publicUrl;
+  } catch (issue) {
     onProgress?.(0);
-    throw error;
+    throw issue instanceof Error ? issue : new Error("Upload failed.");
+  } finally {
+    window.clearInterval(interval);
+  }
+}
+
+export async function uploadBannerImageToSupabase(
+  file: File,
+  onProgress?: (value: number) => void,
+): Promise<string> {
+  const client = requireSupabaseClient();
+  const contentType = resolveImageMimeType(file);
+
+  if (!contentType) {
+    throw new Error("Invalid file. Please upload an image.");
   }
 
-  const { data } = client.storage.from(supabaseBucket).getPublicUrl(path);
-  onProgress?.(100);
-  return data.publicUrl;
+  let progress = 8;
+  onProgress?.(progress);
+
+  const interval = window.setInterval(() => {
+    progress = Math.min(progress + 10, 90);
+    onProgress?.(progress);
+  }, 120);
+
+  const uploadAsset = async (bucketName: string): Promise<string> => {
+    const path = buildStoragePath("banners", file);
+    const { error } = await client.storage.from(bucketName).upload(path, file, {
+      cacheControl: "3600",
+      contentType,
+      upsert: false,
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    const { data } = client.storage.from(bucketName).getPublicUrl(path);
+    return data.publicUrl;
+  };
+
+  try {
+    try {
+      const publicUrl = await uploadAsset(bannerBucket);
+      onProgress?.(100);
+      return publicUrl;
+    } catch (issue) {
+      if (bannerBucket !== supabaseBucket && isMissingStorageBucketError(issue, bannerBucket)) {
+        console.warn("[banners][supabase] banner bucket missing, falling back to product bucket", {
+          bannerBucket,
+          fallbackBucket: supabaseBucket,
+        });
+        const publicUrl = await uploadAsset(supabaseBucket);
+        onProgress?.(100);
+        return publicUrl;
+      }
+
+      throw issue;
+    }
+  } catch (issue) {
+    onProgress?.(0);
+    if (issue instanceof Error) {
+      throw issue;
+    }
+    throw new Error("Upload failed.");
+  } finally {
+    window.clearInterval(interval);
+  }
 }
 
 export async function fetchCurrentUserFromSupabase(): Promise<User | null> {
@@ -923,27 +1051,64 @@ export async function fetchBannersFromSupabase(): Promise<Banner[]> {
   const { data, error } = await client.from("banners").select("id, image_url, position").order("position");
 
   if (error) {
+    if (isMissingTableError(error, "banners")) {
+      throw new Error("Banner database is not set up. Apply the Supabase banner migrations.");
+    }
     throw error;
   }
 
-  return (data ?? []).map((row) => mapRowToBanner(row as SupabaseBannerRow));
+  return (data ?? [])
+    .map((row) => mapRowToBanner(row as SupabaseBannerRow))
+    .filter((banner) => banner.position >= 1 && banner.position <= 10)
+    .sort((left, right) => left.position - right.position);
 }
 
 export async function saveBannerInSupabase(input: Omit<Banner, "id"> & { id?: string }): Promise<Banner> {
   const client = requireSupabaseClient();
+  const imageUrl = input.imageUrl.trim();
+
+  if (!imageUrl) {
+    throw new Error("Banner image URL is required.");
+  }
+
+  if (input.position < 1 || input.position > 10) {
+    throw new Error("Banner position must be between 1 and 10.");
+  }
+
+  console.log("[banners][supabase] save request", {
+    id: input.id ?? null,
+    position: input.position,
+    imageUrl,
+  });
+
+  const existingQuery = await client
+    .from("banners")
+    .select("id")
+    .eq("position", input.position)
+    .maybeSingle();
+
+  if (existingQuery.error) {
+    if (isMissingTableError(existingQuery.error, "banners")) {
+      throw new Error("Banner database is not set up. Apply the Supabase banner migrations.");
+    }
+    throw existingQuery.error;
+  }
+
   const payload = {
-    id: input.id,
-    image_url: input.imageUrl,
+    image_url: imageUrl,
     position: input.position,
   };
 
-  const { data, error } = await client
-    .from("banners")
-    .upsert(payload, { onConflict: "position" })
-    .select("id, image_url, position")
-    .single();
+  const mutation = existingQuery.data?.id
+    ? client.from("banners").update(payload).eq("id", existingQuery.data.id)
+    : client.from("banners").insert(payload);
+
+  const { data, error } = await mutation.select("id, image_url, position").single();
 
   if (error) {
+    if (isMissingTableError(error, "banners")) {
+      throw new Error("Banner database is not set up. Apply the Supabase banner migrations.");
+    }
     throw error;
   }
 
@@ -955,6 +1120,9 @@ export async function deleteBannerFromSupabase(bannerId: string): Promise<void> 
   const { error } = await client.from("banners").delete().eq("id", bannerId);
 
   if (error) {
+    if (isMissingTableError(error, "banners")) {
+      throw new Error("Banner database is not set up. Apply the Supabase banner migrations.");
+    }
     throw error;
   }
 }
@@ -1151,6 +1319,9 @@ export async function addCartItemInSupabase(productId: string, quantity: number)
         .eq("id", existing.id);
 
       if (error) {
+        if (isMissingTableError(error, "cart_items")) {
+          throw new Error("Cart database is not set up. Apply the Supabase cart migrations.");
+        }
         throw error;
       }
 
@@ -1177,6 +1348,9 @@ export async function addCartItemInSupabase(productId: string, quantity: number)
         .eq("id", existing.id);
 
       if (error) {
+        if (isMissingTableError(error, "cart_items")) {
+          throw new Error("Cart database is not set up. Apply the Supabase cart migrations.");
+        }
         throw error;
       }
 
@@ -1201,6 +1375,9 @@ export async function addCartItemInSupabase(productId: string, quantity: number)
     });
 
     if (error) {
+      if (isMissingTableError(error, "cart_items")) {
+        throw new Error("Cart database is not set up. Apply the Supabase cart migrations.");
+      }
       throw error;
     }
 
@@ -1227,6 +1404,9 @@ export async function addCartItemInSupabase(productId: string, quantity: number)
     });
 
     if (error) {
+      if (isMissingTableError(error, "cart_items")) {
+        throw new Error("Cart database is not set up. Apply the Supabase cart migrations.");
+      }
       throw error;
     }
 
@@ -1265,6 +1445,9 @@ export async function updateCartItemInSupabase(
     const { error } = await client.from("cart_items").update(nextPayload).eq("id", cartItemId);
 
     if (error) {
+      if (isMissingTableError(error, "cart_items")) {
+        throw new Error("Cart database is not set up. Apply the Supabase cart migrations.");
+      }
       throw error;
     }
   } catch (issue) {
@@ -1287,6 +1470,9 @@ export async function updateCartItemInSupabase(
     const { error } = await client.from("cart_items").update(fallbackPayload).eq("id", cartItemId);
 
     if (error) {
+      if (isMissingTableError(error, "cart_items")) {
+        throw new Error("Cart database is not set up. Apply the Supabase cart migrations.");
+      }
       throw error;
     }
   }
@@ -1300,6 +1486,9 @@ export async function removeCartItemFromSupabase(cartItemId: string): Promise<Ca
   const { error } = await client.from("cart_items").delete().eq("id", cartItemId);
 
   if (error) {
+    if (isMissingTableError(error, "cart_items")) {
+      throw new Error("Cart database is not set up. Apply the Supabase cart migrations.");
+    }
     console.error("[cart][supabase] remove failed", {
       cartItemId,
       error,

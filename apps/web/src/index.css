@@ -24,6 +24,11 @@
       radial-gradient(circle at 85% 0, rgba(47, 79, 111, 0.06), transparent 22%),
       linear-gradient(180deg, #f5efe6 0%, #ede3d3 100%);
     font-family: Inter, system-ui, sans-serif;
+    overflow-x: hidden;
+  }
+
+  #root {
+    min-height: 100vh;
   }
 
   a {

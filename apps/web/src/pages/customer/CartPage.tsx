@@ -31,7 +31,9 @@ export function CartPage(): JSX.Element {
   const [deliveryTime, setDeliveryTime] = useState("");
   const [couponError, setCouponError] = useState("");
   const [checkoutError, setCheckoutError] = useState("");
+  const [cartActionError, setCartActionError] = useState("");
   const [placingOrder, setPlacingOrder] = useState(false);
+  const [busyItemId, setBusyItemId] = useState<string | null>(null);
 
   const selectedCount = useMemo(() => items.filter((item) => item.selected).length, [items]);
 
@@ -64,6 +66,45 @@ export function CartPage(): JSX.Element {
     }
   };
 
+  const handleUpdateQuantity = async (cartItemId: string, quantity: number): Promise<void> => {
+    setBusyItemId(cartItemId);
+    setCartActionError("");
+
+    try {
+      await updateQuantity(cartItemId, quantity);
+    } catch (issue) {
+      setCartActionError(issue instanceof Error ? issue.message : "Unable to update quantity.");
+    } finally {
+      setBusyItemId((current) => (current === cartItemId ? null : current));
+    }
+  };
+
+  const handleRemoveItem = async (cartItemId: string): Promise<void> => {
+    setBusyItemId(cartItemId);
+    setCartActionError("");
+
+    try {
+      await removeItem(cartItemId);
+    } catch (issue) {
+      setCartActionError(issue instanceof Error ? issue.message : "Unable to remove item.");
+    } finally {
+      setBusyItemId((current) => (current === cartItemId ? null : current));
+    }
+  };
+
+  const handleToggleSelected = async (cartItemId: string): Promise<void> => {
+    setBusyItemId(cartItemId);
+    setCartActionError("");
+
+    try {
+      await toggleSelected(cartItemId);
+    } catch (issue) {
+      setCartActionError(issue instanceof Error ? issue.message : "Unable to update sample selection.");
+    } finally {
+      setBusyItemId((current) => (current === cartItemId ? null : current));
+    }
+  };
+
   if (loading) {
     return <Loader label="Loading cart..." />;
   }
@@ -78,6 +119,8 @@ export function CartPage(): JSX.Element {
           <p className="mt-4 max-w-2xl text-sm leading-7 text-slate-600">
             Update quantities, choose which sample items to include, apply a coupon, and confirm delivery details in one flow.
           </p>
+          {error ? <p className="mt-4 text-sm text-rose-500">{error}</p> : null}
+          {cartActionError ? <p className="mt-2 text-sm text-rose-500">{cartActionError}</p> : null}
         </section>
 
         {items.length ? (
@@ -85,6 +128,8 @@ export function CartPage(): JSX.Element {
             <section className="space-y-4">
               {items.map((item) => {
                 const discountedPrice = calculateDiscountedPrice(item.product.price, item.product.discount);
+                const itemTotal = discountedPrice * item.quantity;
+                const itemBusy = busyItemId === item.id;
 
                 return (
                   <motion.article key={item.id} whileHover={{ y: -3 }} className="card grid gap-4 p-5 md:grid-cols-[120px_1fr]">
@@ -99,12 +144,13 @@ export function CartPage(): JSX.Element {
                           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-brand-700">
                             {item.product.brand}
                           </p>
-                          <h2 className="mt-2 font-heading text-3xl font-semibold text-ink">
+                          <Link to={`/product/${item.productId}`} className="mt-2 inline-block font-heading text-3xl font-semibold text-ink">
                             {item.product.name}
-                          </h2>
+                          </Link>
                           <p className="mt-2 text-sm text-slate-500">
                             {item.product.weight} • {item.product.packetCount} pack
                           </p>
+                          <p className="mt-2 text-sm font-semibold text-slate-700">Item total: {formatInr(itemTotal)}</p>
                         </div>
                         <div className="text-right">
                           <p className="text-2xl font-semibold text-ink">{formatInr(discountedPrice)}</p>
@@ -118,7 +164,8 @@ export function CartPage(): JSX.Element {
                         <div className="flex items-center rounded-full border border-[#e8dfd1] bg-white p-1 shadow-soft">
                           <button
                             type="button"
-                            onClick={() => void updateQuantity(item.id, Math.max(1, item.quantity - 1))}
+                            onClick={() => void handleUpdateQuantity(item.id, Math.max(1, item.quantity - 1))}
+                            disabled={itemBusy}
                             className="flex h-10 w-10 items-center justify-center rounded-full text-lg text-ink transition hover:bg-slate-100"
                           >
                             -
@@ -126,7 +173,8 @@ export function CartPage(): JSX.Element {
                           <span className="min-w-[44px] text-center text-base font-semibold text-ink">{item.quantity}</span>
                           <button
                             type="button"
-                            onClick={() => void updateQuantity(item.id, item.quantity + 1)}
+                            onClick={() => void handleUpdateQuantity(item.id, item.quantity + 1)}
+                            disabled={itemBusy}
                             className="flex h-10 w-10 items-center justify-center rounded-full text-lg text-ink transition hover:bg-slate-100"
                           >
                             +
@@ -136,7 +184,8 @@ export function CartPage(): JSX.Element {
                         {item.product.isSample ? (
                           <button
                             type="button"
-                            onClick={() => void toggleSelected(item.id)}
+                            onClick={() => void handleToggleSelected(item.id)}
+                            disabled={itemBusy}
                             className={`rounded-full border px-4 py-2 text-sm font-semibold ${
                               item.selected
                                 ? "border-brand-300 bg-brand-100 text-brand-700"
@@ -149,10 +198,11 @@ export function CartPage(): JSX.Element {
 
                         <button
                           type="button"
-                          onClick={() => void removeItem(item.id)}
+                          onClick={() => void handleRemoveItem(item.id)}
+                          disabled={itemBusy}
                           className="rounded-full bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-600"
                         >
-                          Remove
+                          {itemBusy ? "Working..." : "Remove"}
                         </button>
                       </div>
                     </div>
@@ -161,7 +211,7 @@ export function CartPage(): JSX.Element {
               })}
             </section>
 
-            <aside className="space-y-5">
+            <aside className="space-y-5 xl:sticky xl:top-24 xl:self-start">
               <section className="card p-6">
                 <p className="text-sm font-semibold uppercase tracking-[0.16em] text-brand-700">Coupon</p>
                 <form onSubmit={handleCouponSubmit} className="mt-4 space-y-3">

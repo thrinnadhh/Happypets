@@ -85,6 +85,15 @@ function BannerSlider({ banners }: { banners: Banner[] }): JSX.Element {
   const [paused, setPaused] = useState(false);
 
   useEffect(() => {
+    if (!banners.length) {
+      setActiveIndex(0);
+      return;
+    }
+
+    setActiveIndex((current) => (current >= banners.length ? 0 : current));
+  }, [banners.length]);
+
+  useEffect(() => {
     if (banners.length <= 1 || paused) {
       return;
     }
@@ -108,7 +117,7 @@ function BannerSlider({ banners }: { banners: Banner[] }): JSX.Element {
             Premium pet nutrition, samples, and seasonal promotions in one storefront.
           </h1>
           <p className="mt-5 max-w-2xl text-sm leading-8 text-white/78">
-            Add up to four banners from the admin banner tab to turn this hero into a rotating campaign slider.
+            Add up to ten banners from the admin banner tab to turn this hero into a rotating campaign slider.
           </p>
         </div>
       </section>
@@ -116,6 +125,12 @@ function BannerSlider({ banners }: { banners: Banner[] }): JSX.Element {
   }
 
   const activeBanner = banners[activeIndex];
+  const goToPrevious = (): void => {
+    setActiveIndex((current) => (current - 1 + banners.length) % banners.length);
+  };
+  const goToNext = (): void => {
+    setActiveIndex((current) => (current + 1) % banners.length);
+  };
 
   return (
     <section
@@ -148,19 +163,31 @@ function BannerSlider({ banners }: { banners: Banner[] }): JSX.Element {
             Rotate brand campaigns, festival offers, and hero visuals directly from the admin workspace.
           </p>
         </div>
-        <div className="mt-5 flex gap-2">
-          {banners.map((banner, index) => (
-            <button
-              key={banner.id}
-              type="button"
-              onClick={() => setActiveIndex(index)}
-              className={`h-2.5 rounded-full transition ${
-                index === activeIndex ? "w-10 bg-white" : "w-4 bg-white/45"
-              }`}
-              aria-label={`Go to banner ${banner.position}`}
-            />
-          ))}
-        </div>
+        {banners.length > 1 ? (
+          <div className="mt-5 flex flex-wrap items-center justify-between gap-4">
+            <div className="flex gap-2">
+              {banners.map((banner, index) => (
+                <button
+                  key={banner.id}
+                  type="button"
+                  onClick={() => setActiveIndex(index)}
+                  className={`h-2.5 rounded-full transition ${
+                    index === activeIndex ? "w-10 bg-white" : "w-4 bg-white/45"
+                  }`}
+                  aria-label={`Go to banner ${banner.position}`}
+                />
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <button type="button" onClick={goToPrevious} className="soft-button border-white/20 bg-white/10 text-white">
+                Previous
+              </button>
+              <button type="button" onClick={goToNext} className="soft-button border-white/20 bg-white/10 text-white">
+                Next
+              </button>
+            </div>
+          </div>
+        ) : null}
       </div>
     </section>
   );
@@ -179,6 +206,14 @@ export function CustomerHomePage(): JSX.Element {
       }
     })();
   }, []);
+
+  const sortedBanners = useMemo(
+    () =>
+      [...banners]
+        .filter((banner) => banner.position >= 1 && banner.position <= 10)
+        .sort((left, right) => left.position - right.position),
+    [banners],
+  );
 
   const sectionedProducts = useMemo(() => {
     const grouped = {
@@ -222,7 +257,7 @@ export function CustomerHomePage(): JSX.Element {
     <PageTransition className="min-h-screen bg-soft-grid">
       <Navbar />
       <main className="mx-auto flex max-w-[1500px] flex-col gap-8 px-4 py-6 md:px-6 md:py-8">
-        <BannerSlider banners={banners} />
+        <BannerSlider banners={sortedBanners} />
 
         {loading ? (
           <div className="py-10">

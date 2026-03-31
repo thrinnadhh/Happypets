@@ -8,7 +8,7 @@ import {
   deleteBannerFromSupabase,
   fetchBannersFromSupabase,
   saveBannerInSupabase,
-  uploadImageToSupabase,
+  uploadBannerImageToSupabase,
 } from "@/lib/supabase";
 import { useAuth } from "@/contexts/AuthContext";
 import { Banner } from "@/types";
@@ -27,6 +27,7 @@ export function AdminBannersPage(): JSX.Element {
   const [loading, setLoading] = useState(true);
   const [savingPosition, setSavingPosition] = useState<number | null>(null);
   const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
 
   useEffect(() => {
     const load = async (): Promise<void> => {
@@ -51,14 +52,25 @@ export function AdminBannersPage(): JSX.Element {
   const handleSave = async (position: Banner["position"], imageUrl: string): Promise<void> => {
     setSavingPosition(position);
     setError("");
+    setMessage("");
 
     try {
+      console.log("[banners][frontend] save request", {
+        position,
+        imageUrl,
+      });
       const saved = await saveBannerInSupabase({ position, imageUrl });
       setBanners((current) => {
         const withoutSlot = current.filter((banner) => banner.position !== position && banner.id !== saved.id);
         return [...withoutSlot, saved].sort((left, right) => left.position - right.position);
       });
+      setMessage(`Banner slot ${position} saved.`);
     } catch (issue) {
+      console.error("[banners][frontend] save failed", {
+        position,
+        imageUrl,
+        issue,
+      });
       setError(issue instanceof Error ? issue.message : "Unable to save banner.");
     } finally {
       setSavingPosition(null);
@@ -68,11 +80,18 @@ export function AdminBannersPage(): JSX.Element {
   const handleDelete = async (banner: Banner): Promise<void> => {
     setSavingPosition(banner.position);
     setError("");
+    setMessage("");
 
     try {
+      console.log("[banners][frontend] delete request", banner);
       await deleteBannerFromSupabase(banner.id);
       setBanners((current) => current.filter((item) => item.id !== banner.id));
+      setMessage(`Banner slot ${banner.position} removed.`);
     } catch (issue) {
+      console.error("[banners][frontend] delete failed", {
+        banner,
+        issue,
+      });
       setError(issue instanceof Error ? issue.message : "Unable to remove banner.");
     } finally {
       setSavingPosition(null);
@@ -102,6 +121,7 @@ export function AdminBannersPage(): JSX.Element {
                 <p className="mt-4 max-w-2xl text-sm leading-7 text-slate-600">
                   HappyPets supports up to ten homepage banners. Each slot maps directly to a position in the rotating hero.
                 </p>
+                {message ? <p className="mt-4 text-sm text-emerald-600">{message}</p> : null}
                 {error ? <p className="mt-4 text-sm text-rose-500">{error}</p> : null}
               </section>
 
@@ -142,6 +162,8 @@ function BannerSlotCard({
   const [imageUrl, setImageUrl] = useState(banner?.imageUrl ?? "");
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [localError, setLocalError] = useState("");
+  const [localMessage, setLocalMessage] = useState("");
 
   useEffect(() => {
     setImageUrl(banner?.imageUrl ?? "");
@@ -149,12 +171,32 @@ function BannerSlotCard({
 
   const handleFileChange = async (file?: File): Promise<void> => {
     if (!file) return;
+
+    setLocalError("");
+    setLocalMessage("");
     setUploading(true);
+    console.log("[banners][frontend] upload file", {
+      position,
+      name: file.name,
+      size: file.size,
+      type: file.type,
+    });
     try {
-      const publicUrl = await uploadImageToSupabase(file, setUploadProgress);
+      const publicUrl = await uploadBannerImageToSupabase(file, setUploadProgress);
       setImageUrl(publicUrl);
+      setLocalMessage("Upload complete. Save this slot to publish the banner.");
+    } catch (issue) {
+      console.error("[banners][frontend] upload failed", {
+        position,
+        issue,
+      });
+      setLocalError(issue instanceof Error ? issue.message : "Upload failed.");
     } finally {
+      if (inputRef.current) {
+        inputRef.current.value = "";
+      }
       setUploading(false);
+      setUploadProgress(0);
     }
   };
 
@@ -187,11 +229,15 @@ function BannerSlotCard({
           onChange={(event) => void handleFileChange(event.target.files?.[0])}
         />
         <button type="button" onClick={() => inputRef.current?.click()} className="soft-button">
-          Upload image
+          {uploading ? "Uploading..." : "Upload image"}
         </button>
         <input
           value={imageUrl}
-          onChange={(event) => setImageUrl(event.target.value)}
+          onChange={(event) => {
+            setLocalError("");
+            setLocalMessage("");
+            setImageUrl(event.target.value);
+          }}
           className="input"
           placeholder="Paste banner image URL"
         />
@@ -207,10 +253,12 @@ function BannerSlotCard({
         {uploading ? (
           <p className="text-xs text-slate-500">Uploading to Supabase Storage... {uploadProgress}%</p>
         ) : null}
+        {localMessage ? <p className="text-xs text-emerald-600">{localMessage}</p> : null}
+        {localError ? <p className="text-xs text-rose-500">{localError}</p> : null}
         <button
           type="button"
-          onClick={() => void onSave(position, imageUrl)}
-          disabled={saving || !imageUrl}
+          onClick={() => void onSave(position, imageUrl.trim())}
+          disabled={saving || uploading || !imageUrl.trim()}
           className="primary-button disabled:opacity-60"
         >
           {saving ? "Saving..." : banner ? "Update banner" : "Save banner"}
