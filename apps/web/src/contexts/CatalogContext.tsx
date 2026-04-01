@@ -2,6 +2,7 @@ import { createContext, startTransition, useContext, useEffect, useMemo, useStat
 import {
   DEFAULT_PRODUCT_POSITION,
   getDefaultDisplaySection,
+  normalizeLifeStage,
   sortProductsByPosition,
   sortTags,
 } from "@/data/catalog";
@@ -31,6 +32,11 @@ const CatalogContext = createContext<CatalogContextValue | undefined>(undefined)
 function normalizeProduct(product: Product): Product {
   return {
     ...product,
+    lifeStage: normalizeLifeStage(
+      product.category,
+      product.lifeStage ?? "",
+      `${product.name} ${product.description ?? ""}`,
+    ),
     displaySection: product.displaySection ?? getDefaultDisplaySection(product.category),
     position:
       typeof product.position === "number" && Number.isFinite(product.position) && product.position > 0

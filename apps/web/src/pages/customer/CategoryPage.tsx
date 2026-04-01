@@ -7,9 +7,11 @@ import { Navbar } from "@/components/layout/Navbar";
 import { ProductCard } from "@/components/products/ProductCard";
 import { useCatalog } from "@/contexts/CatalogContext";
 import {
+  categoryLifeStages,
   categoryCopy,
   getCategoryFromSlug,
   getCategoryPath,
+  normalizeLifeStage,
   productTagLabels,
   productTagStyles,
   productTags,
@@ -22,10 +24,12 @@ export function CategoryPage(): JSX.Element {
   const category = getCategoryFromSlug(type);
   const { products } = useCatalog();
   const [selectedBrand, setSelectedBrand] = useState<string>("All");
+  const [selectedLifeStage, setSelectedLifeStage] = useState<string>("All");
   const [selectedTag, setSelectedTag] = useState<ProductTag | "all">("all");
 
   useEffect(() => {
     setSelectedBrand("All");
+    setSelectedLifeStage("All");
     setSelectedTag("all");
   }, [category]);
 
@@ -38,15 +42,29 @@ export function CategoryPage(): JSX.Element {
     () => ["All", ...new Set(categoryProducts.map((product) => product.brand))],
     [categoryProducts],
   );
+  const lifeStages = useMemo(
+    () =>
+      category
+        ? ["All", ...(categoryLifeStages[category] ?? [])]
+        : ["All"],
+    [category],
+  );
 
   const filteredProducts = useMemo(
     () =>
       categoryProducts.filter((product) => {
         const matchesBrand = selectedBrand === "All" || product.brand === selectedBrand;
+        const resolvedLifeStage = normalizeLifeStage(
+          product.category,
+          product.lifeStage,
+          `${product.name} ${product.description ?? ""}`,
+        );
+        const matchesLifeStage =
+          selectedLifeStage === "All" || resolvedLifeStage === selectedLifeStage;
         const matchesTag = selectedTag === "all" || product.tags?.includes(selectedTag);
-        return matchesBrand && matchesTag;
+        return matchesBrand && matchesLifeStage && matchesTag;
       }),
-    [categoryProducts, selectedBrand, selectedTag],
+    [categoryProducts, selectedBrand, selectedLifeStage, selectedTag],
   );
 
   if (!category) {
@@ -103,6 +121,7 @@ export function CategoryPage(): JSX.Element {
             {[
               ["Products", `${categoryProducts.length}`],
               ["Brands", `${brands.length - 1}`],
+              ["Stages", `${Math.max(lifeStages.length - 1, 0)}`],
               ["Recommended", `${categoryProducts.filter((product) => product.tags?.includes("recommended")).length}`],
             ].map(([label, value]) => (
               <div key={label} className="rounded-[28px] border border-white/60 bg-white/80 p-6 shadow-soft backdrop-blur-sm">
@@ -136,6 +155,30 @@ export function CategoryPage(): JSX.Element {
                   </button>
                 ))}
               </div>
+            </div>
+
+            <div>
+              {categoryLifeStages[category]?.length ? (
+                <>
+                  <p className="text-sm font-semibold uppercase tracking-[0.18em] text-brand-700">Stage</p>
+                  <div className="mt-4 flex flex-wrap gap-3">
+                    {lifeStages.map((stage) => (
+                      <button
+                        key={stage}
+                        type="button"
+                        onClick={() => setSelectedLifeStage(stage)}
+                        className={`cursor-pointer rounded-full border px-4 py-2 text-sm font-semibold transition ${
+                          selectedLifeStage === stage
+                            ? "border-brand-300 bg-brand-100 text-brand-700"
+                            : "border-[#e7d9c3] bg-[#fcf8f1] text-slate-500 hover:border-brand-300 hover:text-brand-700"
+                        }`}
+                      >
+                        {stage}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : null}
             </div>
 
             <div>
@@ -179,11 +222,12 @@ export function CategoryPage(): JSX.Element {
                 Filter by brand or tag, then open any product for details, favorites, and related picks.
               </p>
             </div>
-            {selectedBrand !== "All" || selectedTag !== "all" ? (
+            {selectedBrand !== "All" || selectedLifeStage !== "All" || selectedTag !== "all" ? (
               <button
                 type="button"
                 onClick={() => {
                   setSelectedBrand("All");
+                  setSelectedLifeStage("All");
                   setSelectedTag("all");
                 }}
                 className="soft-button"

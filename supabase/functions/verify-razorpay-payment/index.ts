@@ -105,6 +105,21 @@ function buildOrderNumber(): string {
   return `HPT-${date}-${suffix}`;
 }
 
+function validateCheckoutPayload(checkout: CheckoutPayload): void {
+  if (!checkout.address.trim()) {
+    throw new Error("Delivery address is required.");
+  }
+
+  if (!/^\d{10}$/.test(checkout.mobileNumber.trim())) {
+    throw new Error("Mobile number must be exactly 10 digits.");
+  }
+
+  const deliveryDate = new Date(checkout.deliveryTime);
+  if (!checkout.deliveryTime || Number.isNaN(deliveryDate.getTime()) || deliveryDate.getTime() <= Date.now()) {
+    throw new Error("Delivery time must be in the future.");
+  }
+}
+
 async function hmacHex(secret: string, message: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
@@ -320,6 +335,8 @@ serve(async (request) => {
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
       throw new Error("Missing Razorpay verification payload.");
     }
+
+    validateCheckoutPayload(checkout);
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;

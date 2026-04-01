@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { FavoriteButton } from "@/components/products/FavoriteButton";
 import { StarIcon } from "@/components/common/Icons";
 import { productTagLabels, productTagStyles, sortTags } from "@/data/catalog";
-import { calculateDiscountedPrice, formatInr } from "@/lib/commerce";
+import { calculateDiscountedPrice, formatInr, isProductExpired } from "@/lib/commerce";
 import { Product } from "@/types";
 
 export function ProductCard({ product }: { product: Product }): JSX.Element {
@@ -11,6 +11,7 @@ export function ProductCard({ product }: { product: Product }): JSX.Element {
   const rating = product.rating ?? 4.8;
   const tags = sortTags(product.tags ?? []);
   const isRecommended = tags.includes("recommended");
+  const expired = isProductExpired(product.expiryDate);
 
   return (
     <motion.article
@@ -39,6 +40,11 @@ export function ProductCard({ product }: { product: Product }): JSX.Element {
               Sample
             </span>
           ) : null}
+          {expired ? (
+            <span className="absolute left-4 top-28 rounded-full bg-rose-100 px-3 py-1 text-xs font-semibold text-rose-700">
+              Expired
+            </span>
+          ) : null}
           {tags.length ? (
             <div className="absolute inset-x-4 bottom-4 flex flex-wrap gap-2">
               {tags.slice(0, 2).map((tag) => (
@@ -61,9 +67,16 @@ export function ProductCard({ product }: { product: Product }): JSX.Element {
         <div className="space-y-4 p-5">
           <div className="flex items-center justify-between gap-3">
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{product.brand}</p>
-            <span className="rounded-full bg-[#f6efe3] px-3 py-1 text-xs font-medium text-slate-600">
-              {product.category}
-            </span>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {product.lifeStage ? (
+                <span className="rounded-full bg-[#eef4fb] px-3 py-1 text-xs font-medium text-[#2f4f6f]">
+                  {product.lifeStage}
+                </span>
+              ) : null}
+              <span className="rounded-full bg-[#f6efe3] px-3 py-1 text-xs font-medium text-slate-600">
+                {product.category}
+              </span>
+            </div>
           </div>
 
           <div>

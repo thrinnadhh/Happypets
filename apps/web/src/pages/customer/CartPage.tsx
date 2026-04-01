@@ -6,7 +6,7 @@ import { Loader } from "@/components/common/Loader";
 import { PageTransition } from "@/components/common/PageTransition";
 import { Navbar } from "@/components/layout/Navbar";
 import { useCart } from "@/contexts/CartContext";
-import { calculateDiscountedPrice, formatInr } from "@/lib/commerce";
+import { calculateDiscountedPrice, formatInr, isProductExpired } from "@/lib/commerce";
 
 function mapCheckoutIssue(issue: unknown): { error: string; notice: string } {
   const message = issue instanceof Error ? issue.message : "Unable to complete payment.";
@@ -22,6 +22,31 @@ function mapCheckoutIssue(issue: unknown): { error: string; notice: string } {
     error: message,
     notice: "",
   };
+}
+
+function toDateTimeLocalMinValue(date = new Date()): string {
+  const offset = date.getTimezoneOffset();
+  const local = new Date(date.getTime() - offset * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+function validateCheckoutFields(address: string, mobileNumber: string, deliveryTime: string): Partial<Record<"address" | "mobileNumber" | "deliveryTime", string>> {
+  const errors: Partial<Record<"address" | "mobileNumber" | "deliveryTime", string>> = {};
+
+  if (!address.trim()) {
+    errors.address = "Delivery address is required.";
+  }
+
+  if (!/^\d{10}$/.test(mobileNumber.trim())) {
+    errors.mobileNumber = "Mobile number must be exactly 10 digits.";
+  }
+
+  const deliveryDate = new Date(deliveryTime);
+  if (!deliveryTime || Number.isNaN(deliveryDate.getTime()) || deliveryDate.getTime() <= Date.now()) {
+    errors.deliveryTime = "Delivery time must be in the future.";
+  }
+
+  return errors;
 }
 
 export function CartPage(): JSX.Element {
@@ -53,6 +78,16 @@ export function CartPage(): JSX.Element {
   const [busyItemId, setBusyItemId] = useState<string | null>(null);
 
   const selectedCount = useMemo(() => items.filter((item) => item.selected).length, [items]);
+  const checkoutFieldErrors = validateCheckoutFields(address, mobileNumber, deliveryTime);
+  const invalidSelectedItems = items.filter((item) => {
+    if (!item.selected) {
+      return false;
+    }
+
+    return item.product.quantity <= 0 || item.quantity > item.product.quantity || isProductExpired(item.product.expiryDate);
+  });
+  const canSubmitCheckout =
+    !placingOrder && selectedCount > 0 && !invalidSelectedItems.length && Object.keys(checkoutFieldErrors).length === 0;
 
   const handleCouponSubmit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
@@ -70,6 +105,18 @@ export function CartPage(): JSX.Element {
 
   const handlePlaceOrder = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
+    if (invalidSelectedItems.length) {
+      setCheckoutNotice("");
+      setCheckoutError("Remove expired or out-of-stock items before checkout.");
+      return;
+    }
+
+    if (Object.keys(checkoutFieldErrors).length) {
+      setCheckoutNotice("");
+      setCheckoutError(Object.values(checkoutFieldErrors)[0] ?? "Please fix the checkout details.");
+      return;
+    }
+
     setPlacingOrder(true);
     setCheckoutError("");
     setCheckoutNotice("");
@@ -150,6 +197,9 @@ export function CartPage(): JSX.Element {
                 const discountedPrice = calculateDiscountedPrice(item.product.price, item.product.discount);
                 const itemTotal = discountedPrice * item.quantity;
                 const itemBusy = busyItemId === item.id;
+                const itemExpired = isProductExpired(item.product.expiryDate);
+                const itemOutOfStock = item.product.quantity <= 0;
+                const quantityAtLimit = item.quantity >= item.product.quantity;
 
                 return (
                   <motion.article key={item.id} whileHover={{ y: -3 }} className="card grid gap-4 p-5 md:grid-cols-[120px_1fr]">
@@ -170,6 +220,13 @@ export function CartPage(): JSX.Element {
                           <p className="mt-2 text-sm text-slate-500">
                             {item.product.weight} • {item.product.packetCount} pack
                           </p>
+                          {itemExpired ? (
+                            <p className="mt-2 text-sm font-semibold text-rose-600">Expired</p>
+                          ) : itemOutOfStock ? (
+                            <p className="mt-2 text-sm font-semibold text-rose-600">Out of stock</p>
+                          ) : (
+                            <p className="mt-2 text-sm text-slate-500">{item.product.quantity} available</p>
+                          )}
                           <p className="mt-2 text-sm font-semibold text-slate-700">Item total: {formatInr(itemTotal)}</p>
                         </div>
                         <div className="text-right">
@@ -185,7 +242,7 @@ export function CartPage(): JSX.Element {
                           <button
                             type="button"
                             onClick={() => void handleUpdateQuantity(item.id, Math.max(1, item.quantity - 1))}
-                            disabled={itemBusy}
+                            disabled={itemBusy || item.quantity <= 1}
                             className="flex h-10 w-10 items-center justify-center rounded-full text-lg text-ink transition hover:bg-slate-100"
                           >
                             -
@@ -194,8 +251,8 @@ export function CartPage(): JSX.Element {
                           <button
                             type="button"
                             onClick={() => void handleUpdateQuantity(item.id, item.quantity + 1)}
-                            disabled={itemBusy}
-                            className="flex h-10 w-10 items-center justify-center rounded-full text-lg text-ink transition hover:bg-slate-100"
+                            disabled={itemBusy || itemExpired || itemOutOfStock || quantityAtLimit}
+                            className="flex h-10 w-10 items-center justify-center rounded-full text-lg text-ink transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
                           >
                             +
                           </button>
@@ -299,6 +356,7 @@ export function CartPage(): JSX.Element {
                       placeholder="House / flat, street, landmark"
                       required
                     />
+                    {checkoutFieldErrors.address ? <p className="text-xs text-rose-500">{checkoutFieldErrors.address}</p> : null}
                   </label>
 
                   <div className="grid gap-4 md:grid-cols-2">
@@ -311,6 +369,7 @@ export function CartPage(): JSX.Element {
                         placeholder="10-digit phone number"
                         required
                       />
+                      {checkoutFieldErrors.mobileNumber ? <p className="text-xs text-rose-500">{checkoutFieldErrors.mobileNumber}</p> : null}
                     </label>
 
                     <label className="field">
@@ -320,12 +379,17 @@ export function CartPage(): JSX.Element {
                         onChange={(event) => setDeliveryTime(event.target.value)}
                         className="input"
                         type="datetime-local"
+                        min={toDateTimeLocalMinValue()}
                         required
                       />
+                      {checkoutFieldErrors.deliveryTime ? <p className="text-xs text-rose-500">{checkoutFieldErrors.deliveryTime}</p> : null}
                     </label>
                   </div>
 
                   {error ? <p className="text-sm text-rose-500">{error}</p> : null}
+                  {invalidSelectedItems.length ? (
+                    <p className="text-sm text-rose-500">Remove expired or out-of-stock items before checkout.</p>
+                  ) : null}
                   {checkoutNotice ? <p className="text-sm text-amber-700">{checkoutNotice}</p> : null}
                   {checkoutError ? <p className="text-sm text-rose-500">{checkoutError}</p> : null}
                   <div className="rounded-[24px] border border-[#eadfce] bg-white/70 p-4">
@@ -336,7 +400,7 @@ export function CartPage(): JSX.Element {
                       </div>
                       <p className="text-2xl font-semibold text-ink">{formatInr(total)}</p>
                     </div>
-                    <button disabled={placingOrder || !selectedCount} className="primary-button mt-4 w-full justify-center">
+                    <button disabled={!canSubmitCheckout} className="primary-button mt-4 w-full justify-center disabled:cursor-not-allowed disabled:opacity-60">
                       {placingOrder ? "Opening Razorpay..." : "Pay with Razorpay"}
                     </button>
                   </div>

@@ -9,6 +9,11 @@ export const productCategories: ProductCategory[] = [
   "Birds",
 ];
 
+export const categoryLifeStages: Partial<Record<ProductCategory, string[]>> = {
+  Dog: ["Adult", "Puppy"],
+  Cat: ["Adult", "Kitten"],
+};
+
 export const displaySections: DisplaySection[] = ["Home", ...productCategories];
 
 export const displaySectionLabels: Record<DisplaySection, string> = {
@@ -70,6 +75,42 @@ export function getCategoryFromSlug(slug?: string): ProductCategory | null {
 
 export function sortTags(tags: ProductTag[] = []): ProductTag[] {
   return [...tags].sort((left, right) => productTags.indexOf(left) - productTags.indexOf(right));
+}
+
+export function normalizeLifeStage(
+  category: ProductCategory,
+  value?: string,
+  fallbackSource = "",
+): string {
+  const trimmedValue = value?.trim() ?? "";
+  const normalizedValue = trimmedValue.toLowerCase();
+  const haystack = `${trimmedValue} ${fallbackSource}`.toLowerCase();
+  const allowedStages = categoryLifeStages[category] ?? [];
+
+  const exactMatch = allowedStages.find((stage) => stage.toLowerCase() === normalizedValue);
+  if (exactMatch) {
+    return exactMatch;
+  }
+
+  if (category === "Dog") {
+    if (haystack.includes("puppy")) {
+      return "Puppy";
+    }
+    if (haystack.includes("adult")) {
+      return "Adult";
+    }
+  }
+
+  if (category === "Cat") {
+    if (haystack.includes("kitten")) {
+      return "Kitten";
+    }
+    if (haystack.includes("adult")) {
+      return "Adult";
+    }
+  }
+
+  return trimmedValue;
 }
 
 export function sortProductsByPosition(products: Product[]): Product[] {

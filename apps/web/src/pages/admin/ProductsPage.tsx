@@ -16,6 +16,7 @@ const adminLinks = [
   { to: "/admin/dashboard", label: "Dashboard" },
   { to: "/admin/products", label: "Products" },
   { to: "/admin/banners", label: "Banners" },
+  { to: "/admin/coupons", label: "Coupons" },
 ];
 
 export function AdminProductsPage(): JSX.Element {
@@ -108,6 +109,11 @@ export function AdminProductsPage(): JSX.Element {
                       key: "category",
                       title: "Category",
                       render: (product) => product.category,
+                    },
+                    {
+                      key: "lifeStage",
+                      title: "Stage",
+                      render: (product) => product.lifeStage || "—",
                     },
                     {
                       key: "displaySection",

@@ -3,11 +3,13 @@ import {
   DEFAULT_PRODUCT_POSITION,
   getCategoryFromSlug,
   getDefaultDisplaySection,
+  normalizeLifeStage,
   productCategories,
   sortTags,
 } from "@/data/catalog";
 import {
   AdminRecord,
+  AdminCoupon,
   Banner,
   CartItem,
   CheckoutDetails,
@@ -21,7 +23,7 @@ import {
   SignupResult,
   User,
 } from "@/types";
-import { calculateDiscountedPrice } from "@/lib/commerce";
+import { calculateDiscountedPrice, isManufactureDateInvalid, isProductExpired } from "@/lib/commerce";
 
 function getEnvValue(...keys: string[]): string | undefined {
   for (const key of keys) {
@@ -72,6 +74,7 @@ type SupabaseProductRow = {
   id: string;
   shop_id: string;
   name: string;
+  life_stage?: string | null;
   description: string | null;
   created_at?: string | null;
   price_inr: number;
@@ -122,12 +125,19 @@ type SupabaseCartBaseRow = {
 };
 
 type SupabaseCouponRow = {
+  id?: string;
   code: string;
   description: string | null;
   discount_type: "percentage" | "flat";
   discount_value: number;
   min_order_inr: number | null;
   max_discount_inr: number | null;
+  valid_from?: string | null;
+  valid_until?: string | null;
+  starts_at?: string | null;
+  ends_at?: string | null;
+  is_active?: boolean | null;
+  created_at?: string | null;
 };
 
 type SupabaseOrderItemRow = {
@@ -180,6 +190,57 @@ const IMAGE_MIME_TYPES: Record<string, string> = {
 };
 
 const PRODUCT_SELECT = `
+  id,
+  shop_id,
+  name,
+  life_stage,
+  description,
+  created_at,
+  price_inr,
+  discount,
+  stock_quantity,
+  images,
+  is_active,
+  tags,
+  brand,
+  weight,
+  packet_count,
+  is_sample,
+  manufacture_date,
+  expiry_date,
+  sold_count,
+  revenue,
+  rating,
+  display_section,
+  position,
+  category:categories!products_category_id_fkey(name, slug)
+`;
+
+const LIFE_STAGE_PRODUCT_SELECT = `
+  id,
+  shop_id,
+  name,
+  life_stage,
+  description,
+  created_at,
+  price_inr,
+  discount,
+  stock_quantity,
+  images,
+  is_active,
+  tags,
+  brand,
+  manufacture_date,
+  expiry_date,
+  sold_count,
+  revenue,
+  rating,
+  display_section,
+  position,
+  category:categories!products_category_id_fkey(name, slug)
+`;
+
+const ENHANCED_PRODUCT_SELECT = `
   id,
   shop_id,
   name,
@@ -338,6 +399,18 @@ async function extractFunctionErrorMessage(issue: unknown, fallback: string): Pr
   }
 }
 
+function toError(issue: unknown, fallback: string): Error {
+  if (issue instanceof Error) {
+    return issue;
+  }
+
+  if (issue && typeof issue === "object" && "message" in issue && typeof issue.message === "string") {
+    return new Error(issue.message);
+  }
+
+  return new Error(fallback);
+}
+
 function deriveNameFromEmail(email: string): string {
   return email
     .split("@")[0]
@@ -370,12 +443,18 @@ function mapRowToProduct(row: SupabaseProductRow): Product {
   const category = normalizeCategory(row.category);
   const images = row.images?.length ? row.images : [];
   const primaryImage = images[0] ?? "";
+  const derivedLifeStage = normalizeLifeStage(
+    category,
+    row.life_stage ?? "",
+    `${row.name} ${row.description ?? ""}`,
+  );
 
   return {
     id: row.id,
     shopId: row.shop_id,
     name: row.name,
     category,
+    lifeStage: derivedLifeStage,
     displaySection: row.display_section ?? getDefaultDisplaySection(category),
     position: row.position ?? DEFAULT_PRODUCT_POSITION,
     tags: sortTags(row.tags ?? []),
@@ -403,6 +482,22 @@ function mapRowToBanner(row: SupabaseBannerRow): Banner {
     id: row.id,
     imageUrl: row.image_url,
     position: row.position as Banner["position"],
+  };
+}
+
+function mapRowToAdminCoupon(row: SupabaseCouponRow): AdminCoupon {
+  return {
+    id: row.id ?? "",
+    code: row.code,
+    description: row.description ?? "",
+    discountType: row.discount_type,
+    discountValue: Number(row.discount_value),
+    minOrderInr: Number(row.min_order_inr ?? 0),
+    maxDiscountInr: row.max_discount_inr == null ? null : Number(row.max_discount_inr),
+    validFrom: row.valid_from ?? row.starts_at ?? "",
+    validUntil: row.valid_until ?? row.ends_at ?? "",
+    isActive: row.is_active ?? true,
+    createdAt: row.created_at ?? "",
   };
 }
 
@@ -565,13 +660,117 @@ function buildOrderNumber(): string {
   return `HPT-${date}-${suffix}`;
 }
 
+function validateProductInput(product: Omit<Product, "id" | "soldCount" | "revenue">): void {
+  if (!Number.isFinite(product.price) || product.price <= 0) {
+    throw new Error("Price must be greater than 0.");
+  }
+
+  if (!Number.isFinite(product.quantity) || product.quantity < 0) {
+    throw new Error("Quantity cannot be negative.");
+  }
+
+  if (!Number.isFinite(product.discount ?? 0) || (product.discount ?? 0) < 0) {
+    throw new Error("Discount cannot be negative.");
+  }
+
+  if (!Number.isFinite(product.packetCount) || product.packetCount < 1) {
+    throw new Error("Packet count must be at least 1.");
+  }
+
+  if (isManufactureDateInvalid(product.manufactureDate, product.expiryDate)) {
+    throw new Error("Manufacture date must be before expiry date.");
+  }
+}
+
+function validateCheckoutInput(checkout: CheckoutDetails): void {
+  if (!checkout.address.trim()) {
+    throw new Error("Delivery address is required.");
+  }
+
+  if (!/^\d{10}$/.test(checkout.mobileNumber.trim())) {
+    throw new Error("Mobile number must be exactly 10 digits.");
+  }
+
+  const deliveryDate = new Date(checkout.deliveryTime);
+  if (!checkout.deliveryTime || Number.isNaN(deliveryDate.getTime()) || deliveryDate.getTime() <= Date.now()) {
+    throw new Error("Delivery time must be in the future.");
+  }
+}
+
+function validateAdminCouponInput(input: {
+  code: string;
+  discountType: AdminCoupon["discountType"];
+  discountValue: number;
+  minOrderInr: number;
+  maxDiscountInr: number | null;
+  validFrom: string;
+  validUntil: string;
+}): void {
+  if (!input.code.trim()) {
+    throw new Error("Coupon code is required.");
+  }
+
+  if (!Number.isFinite(input.discountValue) || input.discountValue <= 0) {
+    throw new Error("Discount value must be greater than 0.");
+  }
+
+  if (input.discountType === "percentage" && input.discountValue > 100) {
+    throw new Error("Percentage discount cannot exceed 100.");
+  }
+
+  if (!Number.isFinite(input.minOrderInr) || input.minOrderInr < 0) {
+    throw new Error("Minimum order must be 0 or greater.");
+  }
+
+  if (input.maxDiscountInr != null && (!Number.isFinite(input.maxDiscountInr) || input.maxDiscountInr < 0)) {
+    throw new Error("Maximum discount must be 0 or greater.");
+  }
+
+  const validFromTime = new Date(input.validFrom).getTime();
+  const validUntilTime = new Date(input.validUntil).getTime();
+
+  if (!input.validFrom || Number.isNaN(validFromTime)) {
+    throw new Error("Valid from time is required.");
+  }
+
+  if (!input.validUntil || Number.isNaN(validUntilTime)) {
+    throw new Error("Valid until time is required.");
+  }
+
+  if (validFromTime >= validUntilTime) {
+    throw new Error("Valid until must be later than valid from.");
+  }
+}
+
+function validateCartProductAvailability(
+  product: Product,
+  requestedQuantity: number,
+  existingQuantity = 0,
+): void {
+  if (product.quantity <= 0) {
+    throw new Error("This product is out of stock.");
+  }
+
+  if (isProductExpired(product.expiryDate)) {
+    throw new Error("This product has expired and cannot be added to the cart.");
+  }
+
+  if (requestedQuantity > product.quantity) {
+    throw new Error("Requested quantity exceeds available stock.");
+  }
+
+  if (existingQuantity + requestedQuantity > product.quantity) {
+    throw new Error("Requested quantity exceeds available stock.");
+  }
+}
+
 function isMissingProductEnhancementColumnError(issue: unknown): boolean {
   if (!issue || typeof issue !== "object") {
     return false;
   }
 
   const message = "message" in issue && typeof issue.message === "string" ? issue.message.toLowerCase() : "";
-  return ["weight", "packet_count", "is_sample"].some((column) => message.includes(column));
+  return ["weight", "packet_count", "is_sample", "life_stage"].some((column) => message.includes(column));
 }
 
 function isMissingCartEnhancementColumnError(issue: unknown): boolean {
@@ -613,6 +812,46 @@ function isMissingTableError(issue: unknown, tableName: string): boolean {
     message.includes(`public.${tableName}`.toLowerCase()) &&
     (message.includes("schema cache") || message.includes("does not exist") || message.includes("relation"))
   );
+}
+
+function isMissingCouponValidityColumnError(issue: unknown): boolean {
+  if (!issue || typeof issue !== "object") {
+    return false;
+  }
+
+  const message = "message" in issue && typeof issue.message === "string" ? issue.message.toLowerCase() : "";
+  return ["valid_from", "valid_until", "starts_at", "ends_at"].some((column) => message.includes(column));
+}
+
+function isPermissionDeniedError(issue: unknown, tableName?: string): boolean {
+  if (!issue || typeof issue !== "object") {
+    return false;
+  }
+
+  const code = "code" in issue && typeof issue.code === "string" ? issue.code : "";
+  const message = "message" in issue && typeof issue.message === "string" ? issue.message.toLowerCase() : "";
+
+  if (code === "42501") {
+    return true;
+  }
+
+  if (message.includes("row-level security") || message.includes("permission denied")) {
+    return !tableName || message.includes(tableName.toLowerCase());
+  }
+
+  return false;
+}
+
+function toCouponAdminError(issue: unknown, fallback = "Unable to create coupon."): Error {
+  if (isMissingTableError(issue, "coupons")) {
+    return new Error("Coupon database is not set up. Apply the Supabase coupon migrations.");
+  }
+
+  if (isPermissionDeniedError(issue, "coupons")) {
+    return new Error("Coupon permissions are not set up for admins. Apply the Supabase coupon admin policy migration.");
+  }
+
+  return toError(issue, fallback);
 }
 
 function resolveImageMimeType(file: Pick<File, "name" | "type">): string | null {
@@ -669,6 +908,38 @@ async function fetchCartBaseRows(
   }
 }
 
+async function fetchCartBaseRowById(
+  client: SupabaseClient,
+  cartItemId: string,
+): Promise<SupabaseCartBaseRow | null> {
+  const attempt = async (selectClause: string): Promise<SupabaseCartBaseRow | null> => {
+    const { data, error } = await client
+      .from("cart_items")
+      .select(selectClause)
+      .eq("id", cartItemId)
+      .maybeSingle();
+
+    if (error) {
+      if (isMissingTableError(error, "cart_items")) {
+        throw new Error("Cart database is not set up. Apply the Supabase cart migrations.");
+      }
+      throw error;
+    }
+
+    return (data as SupabaseCartBaseRow | null) ?? null;
+  };
+
+  try {
+    return await attempt("id, product_id, quantity, selected, created_at");
+  } catch (issue) {
+    if (!isMissingCartEnhancementColumnError(issue)) {
+      throw issue;
+    }
+
+    return attempt("id, product_id, quantity, created_at");
+  }
+}
+
 async function fetchProductsByIds(
   client: SupabaseClient,
   productIds: string[],
@@ -693,11 +964,27 @@ async function fetchProductsByIds(
     return await attempt(PRODUCT_SELECT);
   } catch (issue) {
     if (!isMissingProductEnhancementColumnError(issue)) {
-      throw issue;
+      throw toError(issue, "Unable to load products.");
     }
-
-    return attempt(LEGACY_PRODUCT_SELECT);
   }
+
+  try {
+    return await attempt(LIFE_STAGE_PRODUCT_SELECT);
+  } catch (issue) {
+    if (!isMissingProductEnhancementColumnError(issue)) {
+      throw toError(issue, "Unable to load products.");
+    }
+  }
+
+  try {
+    return await attempt(ENHANCED_PRODUCT_SELECT);
+  } catch (issue) {
+    if (!isMissingProductEnhancementColumnError(issue)) {
+      throw toError(issue, "Unable to load products.");
+    }
+  }
+
+  return attempt(LEGACY_PRODUCT_SELECT);
 }
 
 async function loadRazorpayCheckoutScript(): Promise<void> {
@@ -741,11 +1028,27 @@ async function fetchProductById(productId: string): Promise<Product> {
     return await attempt(PRODUCT_SELECT);
   } catch (issue) {
     if (!isMissingProductEnhancementColumnError(issue)) {
-      throw issue;
+      throw toError(issue, "Unable to load product.");
     }
-
-    return attempt(LEGACY_PRODUCT_SELECT);
   }
+
+  try {
+    return await attempt(LIFE_STAGE_PRODUCT_SELECT);
+  } catch (issue) {
+    if (!isMissingProductEnhancementColumnError(issue)) {
+      throw toError(issue, "Unable to load product.");
+    }
+  }
+
+  try {
+    return await attempt(ENHANCED_PRODUCT_SELECT);
+  } catch (issue) {
+    if (!isMissingProductEnhancementColumnError(issue)) {
+      throw toError(issue, "Unable to load product.");
+    }
+  }
+
+  return attempt(LEGACY_PRODUCT_SELECT);
 }
 
 export async function uploadImageToSupabase(
@@ -966,11 +1269,27 @@ export async function fetchProductsFromSupabase(): Promise<Product[]> {
     return await applyScope(PRODUCT_SELECT);
   } catch (issue) {
     if (!isMissingProductEnhancementColumnError(issue)) {
-      throw issue;
+      throw toError(issue, "Unable to load products.");
     }
-
-    return applyScope(LEGACY_PRODUCT_SELECT);
   }
+
+  try {
+    return await applyScope(LIFE_STAGE_PRODUCT_SELECT);
+  } catch (issue) {
+    if (!isMissingProductEnhancementColumnError(issue)) {
+      throw toError(issue, "Unable to load products.");
+    }
+  }
+
+  try {
+    return await applyScope(ENHANCED_PRODUCT_SELECT);
+  } catch (issue) {
+    if (!isMissingProductEnhancementColumnError(issue)) {
+      throw toError(issue, "Unable to load products.");
+    }
+  }
+
+  return applyScope(LEGACY_PRODUCT_SELECT);
 }
 
 export async function createProductInSupabase(
@@ -983,12 +1302,14 @@ export async function createProductInSupabase(
     throw new Error("Only approved admins can create products.");
   }
 
+  validateProductInput(product);
+
   const [categoryId, shopId] = await Promise.all([
     resolveCategoryId(product.category),
     getCurrentAdminShopId(profile.id),
   ]);
 
-  const basePayload = {
+  const legacyPayload = {
     shop_id: shopId,
     category_id: categoryId,
     name: product.name,
@@ -1012,31 +1333,59 @@ export async function createProductInSupabase(
   };
 
   const enhancedPayload = {
-    ...basePayload,
+    ...legacyPayload,
     weight: product.weight,
     packet_count: product.packetCount,
     is_sample: product.isSample,
   };
 
-  const insertProduct = async (payload: typeof enhancedPayload | typeof basePayload): Promise<string> => {
+  const lifeStagePayload = {
+    ...legacyPayload,
+    life_stage: product.lifeStage?.trim() || null,
+  };
+
+  const fullPayload = {
+    ...enhancedPayload,
+    life_stage: product.lifeStage?.trim() || null,
+  };
+
+  const insertProduct = async (
+    payload: typeof fullPayload | typeof enhancedPayload | typeof legacyPayload,
+  ): Promise<string> => {
     const { data, error } = await client.from("products").insert(payload).select("id").single();
 
     if (error) {
-      throw error;
+      throw toError(error, "Unable to save product.");
     }
 
     return data.id as string;
   };
 
   try {
+    return fetchProductById(await insertProduct(fullPayload));
+  } catch (issue) {
+    if (!isMissingProductEnhancementColumnError(issue)) {
+      throw toError(issue, "Unable to save product.");
+    }
+  }
+
+  try {
+    return fetchProductById(await insertProduct(lifeStagePayload));
+  } catch (issue) {
+    if (!isMissingProductEnhancementColumnError(issue)) {
+      throw toError(issue, "Unable to save product.");
+    }
+  }
+
+  try {
     return fetchProductById(await insertProduct(enhancedPayload));
   } catch (issue) {
     if (!isMissingProductEnhancementColumnError(issue)) {
-      throw issue;
+      throw toError(issue, "Unable to save product.");
     }
-
-    return fetchProductById(await insertProduct(basePayload));
   }
+
+  return fetchProductById(await insertProduct(legacyPayload));
 }
 
 export async function updateProductInSupabase(
@@ -1050,9 +1399,11 @@ export async function updateProductInSupabase(
     throw new Error("Only approved admins can update products.");
   }
 
+  validateProductInput(product);
+
   const categoryId = await resolveCategoryId(product.category);
 
-  const basePayload = {
+  const legacyPayload = {
     category_id: categoryId,
     name: product.name,
     description: product.description,
@@ -1070,29 +1421,57 @@ export async function updateProductInSupabase(
   };
 
   const enhancedPayload = {
-    ...basePayload,
+    ...legacyPayload,
     weight: product.weight,
     packet_count: product.packetCount,
     is_sample: product.isSample,
   };
 
-  const updateProduct = async (payload: typeof enhancedPayload | typeof basePayload): Promise<void> => {
+  const lifeStagePayload = {
+    ...legacyPayload,
+    life_stage: product.lifeStage?.trim() || null,
+  };
+
+  const fullPayload = {
+    ...enhancedPayload,
+    life_stage: product.lifeStage?.trim() || null,
+  };
+
+  const updateProduct = async (
+    payload: typeof fullPayload | typeof enhancedPayload | typeof legacyPayload,
+  ): Promise<void> => {
     const { error } = await client.from("products").update(payload).eq("id", productId);
 
     if (error) {
-      throw error;
+      throw toError(error, "Unable to save product.");
     }
   };
+
+  try {
+    await updateProduct(fullPayload);
+  } catch (issue) {
+    if (!isMissingProductEnhancementColumnError(issue)) {
+      throw toError(issue, "Unable to save product.");
+    }
+  }
+
+  try {
+    await updateProduct(lifeStagePayload);
+  } catch (issue) {
+    if (!isMissingProductEnhancementColumnError(issue)) {
+      throw toError(issue, "Unable to save product.");
+    }
+  }
 
   try {
     await updateProduct(enhancedPayload);
   } catch (issue) {
     if (!isMissingProductEnhancementColumnError(issue)) {
-      throw issue;
+      throw toError(issue, "Unable to save product.");
     }
-
-    await updateProduct(basePayload);
   }
+
+  await updateProduct(legacyPayload);
 
   return fetchProductById(productId);
 }
@@ -1346,8 +1725,9 @@ export async function addCartItemInSupabase(productId: string, quantity: number)
 
   const normalizedQuantity = Number.isFinite(quantity) ? Math.max(1, Math.floor(quantity)) : 1;
 
+  let product: Product;
   try {
-    await fetchProductById(productId);
+    product = await fetchProductById(productId);
   } catch (issue) {
     console.error("[cart][supabase] product validation failed", {
       userId: authUser.id,
@@ -1370,6 +1750,7 @@ export async function addCartItemInSupabase(productId: string, quantity: number)
 
   const existingRows = await fetchCartBaseRows(client, authUser.id, { productId });
   const existing = existingRows[0];
+  validateCartProductAvailability(product!, normalizedQuantity, existing?.quantity ?? 0);
 
   if (existing) {
     try {
@@ -1489,7 +1870,15 @@ export async function updateCartItemInSupabase(
   const nextPayload: Record<string, number | boolean> = {};
 
   if (typeof input.quantity === "number") {
-    nextPayload.quantity = Math.max(1, input.quantity);
+    const normalizedQuantity = Number.isFinite(input.quantity) ? Math.max(1, Math.floor(input.quantity)) : 1;
+    const row = await fetchCartBaseRowById(client, cartItemId);
+    if (!row) {
+      throw new Error("Cart item not found.");
+    }
+
+    const product = await fetchProductById(row.product_id);
+    validateCartProductAvailability(product, normalizedQuantity);
+    nextPayload.quantity = normalizedQuantity;
   }
 
   if (typeof input.selected === "boolean") {
@@ -1571,17 +1960,42 @@ export async function applyCouponInSupabase(
   }
 
   const now = new Date().toISOString();
-  const { data, error } = await client
-    .from("coupons")
-    .select("code, description, discount_type, discount_value, min_order_inr, max_discount_inr")
-    .eq("code", normalizedCode)
-    .eq("is_active", true)
-    .lte("valid_from", now)
-    .gte("valid_until", now)
-    .maybeSingle();
+  let data;
 
-  if (error) {
-    throw error;
+  try {
+    const result = await client
+      .from("coupons")
+      .select("code, description, discount_type, discount_value, min_order_inr, max_discount_inr")
+      .eq("code", normalizedCode)
+      .eq("is_active", true)
+      .lte("valid_from", now)
+      .gte("valid_until", now)
+      .maybeSingle();
+
+    if (result.error) {
+      throw result.error;
+    }
+
+    data = result.data;
+  } catch (issue) {
+    if (!isMissingCouponValidityColumnError(issue)) {
+      throw issue;
+    }
+
+    const legacyResult = await client
+      .from("coupons")
+      .select("code, description, discount_type, discount_value, min_order_inr, max_discount_inr")
+      .eq("code", normalizedCode)
+      .eq("is_active", true)
+      .lte("starts_at", now)
+      .gte("ends_at", now)
+      .maybeSingle();
+
+    if (legacyResult.error) {
+      throw legacyResult.error;
+    }
+
+    data = legacyResult.data;
   }
 
   if (!data) {
@@ -1610,6 +2024,122 @@ export async function applyCouponInSupabase(
   };
 }
 
+export async function fetchAdminCouponsFromSupabase(): Promise<AdminCoupon[]> {
+  const client = requireSupabaseClient();
+  const profile = await getCurrentProfileRow();
+
+  if (!profile || profile.role !== "admin" || !profile.approved) {
+    throw new Error("Only approved admins can manage coupons.");
+  }
+
+  const shopId = await getCurrentAdminShopId(profile.id);
+  const applyScope = async (selectClause: string): Promise<AdminCoupon[]> => {
+    const { data, error } = await client
+      .from("coupons")
+      .select(selectClause)
+      .eq("shop_id", shopId)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      throw toCouponAdminError(error, "Unable to load coupons.");
+    }
+
+    return (data ?? []).map((row) => mapRowToAdminCoupon(row as SupabaseCouponRow));
+  };
+
+  try {
+    return await applyScope(
+      "id, code, description, discount_type, discount_value, min_order_inr, max_discount_inr, valid_from, valid_until, is_active, created_at",
+    );
+  } catch (issue) {
+    if (!isMissingCouponValidityColumnError(issue)) {
+      throw issue;
+    }
+
+    return applyScope(
+      "id, code, description, discount_type, discount_value, min_order_inr, max_discount_inr, starts_at, ends_at, is_active, created_at",
+    );
+  }
+}
+
+export async function createAdminCouponInSupabase(input: {
+  code: string;
+  description: string;
+  discountType: AdminCoupon["discountType"];
+  discountValue: number;
+  minOrderInr: number;
+  maxDiscountInr: number | null;
+  validFrom: string;
+  validUntil: string;
+  isActive: boolean;
+}): Promise<AdminCoupon> {
+  const client = requireSupabaseClient();
+  const profile = await getCurrentProfileRow();
+
+  if (!profile || profile.role !== "admin" || !profile.approved) {
+    throw new Error("Only approved admins can create coupons.");
+  }
+
+  validateAdminCouponInput(input);
+
+  const shopId = await getCurrentAdminShopId(profile.id);
+  const normalizedCode = input.code.trim().toUpperCase();
+  const basePayload = {
+    shop_id: shopId,
+    code: normalizedCode,
+    description: input.description.trim(),
+    discount_type: input.discountType,
+    discount_value: input.discountValue,
+    min_order_inr: input.minOrderInr,
+    max_discount_inr: input.maxDiscountInr,
+    is_active: input.isActive,
+  };
+
+  const insertAndFetch = async (
+    payload: Record<string, string | number | boolean | null>,
+    selectClause: string,
+  ): Promise<AdminCoupon> => {
+    const { data, error } = await client
+      .from("coupons")
+      .insert(payload)
+      .select(selectClause)
+      .single();
+
+    if (error) {
+      if (error.code === "23505") {
+        throw new Error("A coupon with this code already exists.");
+      }
+      throw toCouponAdminError(error);
+    }
+
+    return mapRowToAdminCoupon(data as SupabaseCouponRow);
+  };
+
+  try {
+    return await insertAndFetch(
+      {
+        ...basePayload,
+        valid_from: input.validFrom,
+        valid_until: input.validUntil,
+      },
+      "id, code, description, discount_type, discount_value, min_order_inr, max_discount_inr, valid_from, valid_until, is_active, created_at",
+    );
+  } catch (issue) {
+    if (!isMissingCouponValidityColumnError(issue)) {
+      throw issue;
+    }
+
+    return insertAndFetch(
+      {
+        ...basePayload,
+        starts_at: input.validFrom,
+        ends_at: input.validUntil,
+      },
+      "id, code, description, discount_type, discount_value, min_order_inr, max_discount_inr, starts_at, ends_at, is_active, created_at",
+    );
+  }
+}
+
 export async function placeOrderInSupabase(
   items: CartItem[],
   checkout: CheckoutDetails,
@@ -1622,10 +2152,14 @@ export async function placeOrderInSupabase(
     throw new Error("Sign in to place an order.");
   }
 
+  validateCheckoutInput(checkout);
+
   const selectedItems = items.filter((item) => item.selected);
   if (!selectedItems.length) {
     throw new Error("Select at least one cart item before checkout.");
   }
+
+  selectedItems.forEach((item) => validateCartProductAvailability(item.product, item.quantity));
 
   const currentUser = await fetchCurrentUserFromSupabase();
   const { data: createData, error: createError } = await client.functions.invoke<CreateRazorpayOrderResponse>(

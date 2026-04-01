@@ -19,6 +19,7 @@ export type Product = {
   shopId?: string;
   name: string;
   category: ProductCategory;
+  lifeStage?: string;
   displaySection: DisplaySection;
   position: number;
   tags?: ProductTag[];
@@ -87,6 +88,20 @@ export type CouponResult = {
   code: string;
   description: string;
   discountAmount: number;
+};
+
+export type AdminCoupon = {
+  id: string;
+  code: string;
+  description: string;
+  discountType: "percentage" | "flat";
+  discountValue: number;
+  minOrderInr: number;
+  maxDiscountInr: number | null;
+  validFrom: string;
+  validUntil: string;
+  isActive: boolean;
+  createdAt: string;
 };
 
 export type CheckoutDetails = {

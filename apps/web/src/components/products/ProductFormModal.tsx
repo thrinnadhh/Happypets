@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  categoryLifeStages,
   displaySectionLabels,
   displaySections,
   productCategories,
@@ -10,6 +11,7 @@ import {
   sortTags,
 } from "@/data/catalog";
 import { categoryBrands } from "@/data/mockData";
+import { isManufactureDateInvalid } from "@/lib/commerce";
 import { Product, ProductCategory, ProductTag } from "@/types";
 import { uploadImageToSupabase } from "@/lib/supabase";
 
@@ -18,6 +20,7 @@ type ProductFormInput = Omit<Product, "id" | "soldCount" | "revenue">;
 const emptyForm: ProductFormInput = {
   name: "",
   category: "Dog",
+  lifeStage: "Adult",
   displaySection: "Dog",
   position: 1,
   tags: [],
@@ -35,6 +38,32 @@ const emptyForm: ProductFormInput = {
   rating: 4.8,
   gallery: [],
 };
+
+function validateProductForm(form: ProductFormInput): Partial<Record<"price" | "quantity" | "discount" | "packetCount" | "dates", string>> {
+  const errors: Partial<Record<"price" | "quantity" | "discount" | "packetCount" | "dates", string>> = {};
+
+  if (form.price <= 0) {
+    errors.price = "Price must be greater than 0.";
+  }
+
+  if (form.quantity < 0) {
+    errors.quantity = "Quantity cannot be negative.";
+  }
+
+  if ((form.discount ?? 0) < 0) {
+    errors.discount = "Discount cannot be negative.";
+  }
+
+  if (form.packetCount < 1) {
+    errors.packetCount = "Packet count must be at least 1.";
+  }
+
+  if (isManufactureDateInvalid(form.manufactureDate, form.expiryDate)) {
+    errors.dates = "Manufacture date must be before expiry date.";
+  }
+
+  return errors;
+}
 
 export function ProductFormModal({
   open,
@@ -54,11 +83,17 @@ export function ProductFormModal({
   const [uploadError, setUploadError] = useState("");
   const [saving, setSaving] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const validationErrors = validateProductForm(form);
+  const hasValidationErrors = Object.keys(validationErrors).length > 0;
 
   useEffect(() => {
     if (product) {
       const { id, soldCount, revenue, shopId, createdAt, ...rest } = product;
-      setForm(rest);
+      setForm({
+        ...rest,
+        lifeStage:
+          rest.lifeStage || (categoryLifeStages[rest.category]?.[0] ?? ""),
+      });
       setPreview(rest.image);
       return;
     }
@@ -78,9 +113,11 @@ export function ProductFormModal({
   }, [preview]);
 
   const handleCategoryChange = (category: ProductCategory): void => {
+    const nextLifeStages = categoryLifeStages[category] ?? [];
     setForm((current) => ({
       ...current,
       category,
+      lifeStage: nextLifeStages.length ? nextLifeStages[0] : "",
       displaySection: current.displaySection === current.category ? category : current.displaySection,
       brand: categoryBrands[category][0],
     }));
@@ -97,6 +134,11 @@ export function ProductFormModal({
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
+    if (hasValidationErrors) {
+      setUploadError(Object.values(validationErrors)[0] ?? "Please fix the highlighted product fields.");
+      return;
+    }
+
     setSaving(true);
     setUploadError("");
 
@@ -135,6 +177,9 @@ export function ProductFormModal({
     } catch (error) {
       setUploadError(error instanceof Error ? error.message : "Upload failed.");
     } finally {
+      if (inputRef.current) {
+        inputRef.current.value = "";
+      }
       setUploading(false);
     }
   };
@@ -205,6 +250,23 @@ export function ProductFormModal({
                   ))}
                 </select>
               </label>
+
+              {categoryLifeStages[form.category]?.length ? (
+                <label className="field">
+                  <span>{form.category} stage</span>
+                  <select
+                    value={form.lifeStage ?? ""}
+                    onChange={(event) => setForm((current) => ({ ...current, lifeStage: event.target.value }))}
+                    className="input"
+                  >
+                    {categoryLifeStages[form.category]?.map((stage) => (
+                      <option key={stage} value={stage}>
+                        {stage}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
 
               <label className="field">
                 <span>Display Section</span>
@@ -342,6 +404,7 @@ export function ProductFormModal({
                   className="input"
                   required
                 />
+                {validationErrors.quantity ? <p className="text-xs text-rose-500">{validationErrors.quantity}</p> : null}
               </label>
 
               <label className="field">
@@ -358,6 +421,7 @@ export function ProductFormModal({
                   required
                 />
                 <p className="text-xs text-slate-500">Enter the selling price in INR.</p>
+                {validationErrors.price ? <p className="text-xs text-rose-500">{validationErrors.price}</p> : null}
               </label>
 
               <label className="field">
@@ -388,6 +452,7 @@ export function ProductFormModal({
                   className="input"
                   required
                 />
+                {validationErrors.packetCount ? <p className="text-xs text-rose-500">{validationErrors.packetCount}</p> : null}
               </label>
 
               <label className="field md:col-span-2">
@@ -419,6 +484,7 @@ export function ProductFormModal({
                   }
                   className="input"
                 />
+                {validationErrors.discount ? <p className="text-xs text-rose-500">{validationErrors.discount}</p> : null}
               </label>
 
               <label className="field">
@@ -435,6 +501,7 @@ export function ProductFormModal({
                   className="input"
                   required
                 />
+                {validationErrors.dates ? <p className="text-xs text-rose-500">{validationErrors.dates}</p> : null}
               </label>
 
               <label className="field">
@@ -448,6 +515,7 @@ export function ProductFormModal({
                   className="input"
                   required
                 />
+                {validationErrors.dates ? <p className="text-xs text-rose-500">{validationErrors.dates}</p> : null}
               </label>
 
               <label className="field">
@@ -470,7 +538,7 @@ export function ProductFormModal({
                 <motion.button
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.98 }}
-                  disabled={uploading || saving}
+                  disabled={uploading || saving || hasValidationErrors}
                   className="primary-button disabled:opacity-60"
                 >
                   {saving ? "Saving..." : product ? "Update Product" : "Create Product"}

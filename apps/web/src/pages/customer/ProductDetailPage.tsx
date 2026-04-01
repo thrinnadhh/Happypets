@@ -11,7 +11,7 @@ import { useCart } from "@/contexts/CartContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { useCatalog } from "@/contexts/CatalogContext";
 import { getCategoryPath, productTagLabels, productTagStyles, sortTags } from "@/data/catalog";
-import { calculateDiscountedPrice, formatInr } from "@/lib/commerce";
+import { calculateDiscountedPrice, formatInr, isProductExpired } from "@/lib/commerce";
 
 export function ProductDetailPage(): JSX.Element {
   const { id } = useParams();
@@ -60,6 +60,10 @@ export function ProductDetailPage(): JSX.Element {
   const gallery = product.gallery?.length ? product.gallery : [product.image];
   const rating = product.rating ?? 4.8;
   const tags = sortTags(product.tags ?? []);
+  const isExpired = isProductExpired(product.expiryDate);
+  const isOutOfStock = product.quantity <= 0;
+  const quantityAtLimit = quantity >= Math.max(product.quantity, 1);
+  const addToCartDisabled = isExpired || isOutOfStock;
 
   return (
     <PageTransition className="min-h-screen bg-soft-grid">
@@ -99,6 +103,11 @@ export function ProductDetailPage(): JSX.Element {
                 <p className="text-sm font-semibold uppercase tracking-[0.18em] text-brand-700">{product.category}</p>
                 <h1 className="mt-3 font-heading text-5xl font-semibold leading-none text-ink">{product.name}</h1>
                 <p className="mt-3 text-sm uppercase tracking-[0.16em] text-slate-500">{product.brand}</p>
+                {product.lifeStage ? (
+                  <span className="mt-4 inline-flex rounded-full bg-[#eef4fb] px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-[#2f4f6f]">
+                    {product.lifeStage}
+                  </span>
+                ) : null}
                 {tags.length ? (
                   <div className="mt-4 flex flex-wrap gap-2">
                     {tags.map((tag) => (
@@ -114,6 +123,11 @@ export function ProductDetailPage(): JSX.Element {
                 {product.isSample ? (
                   <span className="mt-4 inline-flex rounded-full bg-[#17324a] px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-white">
                     Sample product
+                  </span>
+                ) : null}
+                {isExpired ? (
+                  <span className="mt-4 ml-2 inline-flex rounded-full bg-rose-100 px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-rose-700">
+                    Expired
                   </span>
                 ) : null}
               </div>
@@ -144,6 +158,9 @@ export function ProductDetailPage(): JSX.Element {
               <p className="mt-3 text-sm leading-7 text-slate-500">
                 Fresh inventory details, clear pricing, and category-matched recommendations keep the purchase flow simple.
               </p>
+              <p className="mt-3 text-sm font-medium text-slate-600">
+                {isExpired ? "This product has expired." : isOutOfStock ? "Currently out of stock." : `${product.quantity} in stock`}
+              </p>
             </div>
 
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -169,14 +186,16 @@ export function ProductDetailPage(): JSX.Element {
               <div className="flex items-center rounded-full border border-[#e8dfd1] bg-white p-1 shadow-soft">
                 <button
                   onClick={() => setQuantity((current) => Math.max(1, current - 1))}
+                  disabled={quantity <= 1}
                   className="flex h-11 w-11 items-center justify-center rounded-full text-lg text-ink transition hover:bg-slate-100"
                 >
                   -
                 </button>
                 <span className="min-w-[48px] text-center text-base font-semibold text-ink">{quantity}</span>
                 <button
-                  onClick={() => setQuantity((current) => current + 1)}
-                  className="flex h-11 w-11 items-center justify-center rounded-full text-lg text-ink transition hover:bg-slate-100"
+                  onClick={() => setQuantity((current) => Math.min(product.quantity, current + 1))}
+                  disabled={addToCartDisabled || quantityAtLimit}
+                  className="flex h-11 w-11 items-center justify-center rounded-full text-lg text-ink transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   +
                 </button>
@@ -184,7 +203,12 @@ export function ProductDetailPage(): JSX.Element {
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.98 }}
+                disabled={addToCartDisabled}
                 onClick={() => {
+                  if (addToCartDisabled) {
+                    setCartError(isExpired ? "This product has expired and cannot be ordered." : "This product is out of stock.");
+                    return;
+                  }
                   setCartError("");
                   const payload = {
                     productId: product.id,
@@ -206,10 +230,10 @@ export function ProductDetailPage(): JSX.Element {
                       setCartError(issue instanceof Error ? issue.message : "Unable to add this product to cart.");
                     });
                 }}
-                className="primary-button bg-[#2F4F6F] px-7 py-3 text-white"
+                className="primary-button bg-[#2F4F6F] px-7 py-3 text-white disabled:cursor-not-allowed disabled:opacity-60"
                 style={{ backgroundImage: "none" }}
               >
-                Add to Cart
+                {isExpired ? "Expired" : isOutOfStock ? "Out of Stock" : "Add to Cart"}
               </motion.button>
               <span className="text-sm text-slate-500">
                 In cart: {getItemQuantity(product.id)}
