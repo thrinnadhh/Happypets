@@ -1,6 +1,14 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { corsHeaders } from "../_shared/cors.ts";
+import {
+  assertAllowedOrigin,
+  assertPostRequest,
+  getCorsHeaders,
+  HttpError,
+  logInternalError,
+  timingSafeEqual,
+} from "../_shared/cors.ts";
+import { enforceRateLimit } from "../_shared/rate-limit.ts";
 
 type CheckoutPayload = {
   address: string;
@@ -42,44 +50,23 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: {
-      ...corsHeaders,
       "Content-Type": "application/json",
     },
   });
 }
 
-function describeIssue(issue: unknown, fallback: string): string {
-  if (issue instanceof Error && issue.message) {
-    return issue.message;
-  }
+function withCors(request: Request, response: Response): Response {
+  const headers = new Headers(response.headers);
+  Object.entries(getCorsHeaders(request)).forEach(([key, value]) => headers.set(key, value));
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
 
-  if (issue && typeof issue === "object") {
-    const candidate = issue as {
-      message?: unknown;
-      details?: unknown;
-      hint?: unknown;
-      code?: unknown;
-    };
-
-    const parts = [
-      typeof candidate.message === "string" ? candidate.message : "",
-      typeof candidate.details === "string" ? candidate.details : "",
-      typeof candidate.hint === "string" ? candidate.hint : "",
-      typeof candidate.code === "string" ? `Code: ${candidate.code}` : "",
-    ].filter(Boolean);
-
-    if (parts.length) {
-      return parts.join(" | ");
-    }
-
-    try {
-      return JSON.stringify(issue);
-    } catch {
-      return fallback;
-    }
-  }
-
-  return fallback;
+function isHttpError(issue: unknown): issue is HttpError {
+  return issue instanceof HttpError;
 }
 
 function isMissingProductEnhancementColumnError(issue: unknown): boolean {
@@ -107,16 +94,16 @@ function buildOrderNumber(): string {
 
 function validateCheckoutPayload(checkout: CheckoutPayload): void {
   if (!checkout.address.trim()) {
-    throw new Error("Delivery address is required.");
+    throw new HttpError(400, "Delivery address is required.");
   }
 
   if (!/^\d{10}$/.test(checkout.mobileNumber.trim())) {
-    throw new Error("Mobile number must be exactly 10 digits.");
+    throw new HttpError(400, "Mobile number must be exactly 10 digits.");
   }
 
   const deliveryDate = new Date(checkout.deliveryTime);
   if (!checkout.deliveryTime || Number.isNaN(deliveryDate.getTime()) || deliveryDate.getTime() <= Date.now()) {
-    throw new Error("Delivery time must be in the future.");
+    throw new HttpError(400, "Delivery time must be in the future.");
   }
 }
 
@@ -148,10 +135,57 @@ async function getCurrentUser(request: Request) {
 
   const { data, error } = await client.auth.getUser();
   if (error || !data.user) {
-    throw new Error("Unauthorized");
+    throw new HttpError(401, "Unauthorized");
   }
 
   return data.user;
+}
+
+function validateVerificationPayload(payload: {
+  razorpay_order_id: unknown;
+  razorpay_payment_id: unknown;
+  razorpay_signature: unknown;
+}): asserts payload is {
+  razorpay_order_id: string;
+  razorpay_payment_id: string;
+  razorpay_signature: string;
+} {
+  if (
+    typeof payload.razorpay_order_id !== "string" ||
+    typeof payload.razorpay_payment_id !== "string" ||
+    typeof payload.razorpay_signature !== "string"
+  ) {
+    throw new HttpError(400, "Missing Razorpay verification payload.");
+  }
+
+  if (!/^order_[A-Za-z0-9]+$/.test(payload.razorpay_order_id)) {
+    throw new HttpError(400, "Invalid Razorpay order reference.");
+  }
+
+  if (!/^pay_[A-Za-z0-9]+$/.test(payload.razorpay_payment_id)) {
+    throw new HttpError(400, "Invalid Razorpay payment reference.");
+  }
+
+  if (!/^[a-fA-F0-9]{64}$/.test(payload.razorpay_signature)) {
+    throw new HttpError(400, "Invalid Razorpay signature.");
+  }
+}
+
+function sanitizeCouponCode(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim().toUpperCase();
+  if (!normalized) {
+    return null;
+  }
+
+  if (!/^[A-Z0-9_-]{3,32}$/.test(normalized)) {
+    throw new HttpError(400, "Coupon code format is invalid.");
+  }
+
+  return normalized;
 }
 
 async function fetchSelectedCart(adminClient: ReturnType<typeof createClient>, userId: string): Promise<CartRow[]> {
@@ -293,7 +327,7 @@ async function resolveCoupon(
 
   const coupon = data as CouponRow;
   if (subtotal < Number(coupon.min_order_inr ?? 0)) {
-    throw new Error("Coupon minimum order value not met.");
+    throw new HttpError(400, "Coupon minimum order value not met.");
   }
 
   let discountAmount =
@@ -313,30 +347,33 @@ async function resolveCoupon(
 
 serve(async (request) => {
   if (request.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
+    return new Response("ok", { headers: getCorsHeaders(request) });
   }
 
   try {
+    assertAllowedOrigin(request);
+    assertPostRequest(request);
+
     const user = await getCurrentUser(request);
-    const {
-      razorpay_order_id,
-      razorpay_payment_id,
-      razorpay_signature,
-      checkout,
-      couponCode,
-    } = await request.json() as {
-      razorpay_order_id: string;
-      razorpay_payment_id: string;
-      razorpay_signature: string;
+    const body = await request.json().catch(() => {
+      throw new HttpError(400, "Invalid request body.");
+    }) as {
+      razorpay_order_id: unknown;
+      razorpay_payment_id: unknown;
+      razorpay_signature: unknown;
       checkout: CheckoutPayload;
-      couponCode?: string | null;
+      couponCode?: unknown;
     };
 
-    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
-      throw new Error("Missing Razorpay verification payload.");
+    validateVerificationPayload(body);
+
+    if (!body.checkout || typeof body.checkout !== "object") {
+      throw new HttpError(400, "Checkout details are required.");
     }
 
-    validateCheckoutPayload(checkout);
+    validateCheckoutPayload(body.checkout);
+    const couponCode = sanitizeCouponCode(body.couponCode ?? null);
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, checkout } = body;
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -345,7 +382,7 @@ serve(async (request) => {
     const razorpaySecret = Deno.env.get("RAZORPAY_KEY_SECRET") ?? "";
 
     if (!razorpayKeyId || !razorpaySecret) {
-      throw new Error("Razorpay credentials are not configured.");
+      throw new HttpError(500, "Payment verification is temporarily unavailable.", { expose: false });
     }
 
     const expectedSignature = await hmacHex(
@@ -353,11 +390,17 @@ serve(async (request) => {
       `${razorpay_order_id}|${razorpay_payment_id}`,
     );
 
-    if (expectedSignature !== razorpay_signature) {
-      throw new Error("Invalid Razorpay signature.");
-    }
-
     const adminClient = createClient(supabaseUrl, serviceRoleKey);
+    await enforceRateLimit(adminClient, {
+      scopeKey: `payment:verify:${user.id}`,
+      action: "verify_razorpay_payment",
+      maxRequests: 20,
+      windowSeconds: 300,
+    });
+
+    if (!timingSafeEqual(expectedSignature, razorpay_signature)) {
+      throw new HttpError(400, "Invalid Razorpay signature.");
+    }
 
     const { data: existingOrder } = await adminClient
       .from("orders")
@@ -368,7 +411,7 @@ serve(async (request) => {
     if (existingOrder) {
       const existingOrderWithItems = await fetchOrderWithItems(adminClient, existingOrder.id);
 
-      return jsonResponse({ order: existingOrderWithItems });
+      return withCors(request, jsonResponse({ order: existingOrderWithItems }));
     }
 
     const auth = btoa(`${razorpayKeyId}:${razorpaySecret}`);
@@ -379,26 +422,25 @@ serve(async (request) => {
     });
 
     if (!paymentResponse.ok) {
-      const errorText = await paymentResponse.text();
-      throw new Error(`Unable to fetch Razorpay payment: ${errorText}`);
+      throw new HttpError(502, "Unable to confirm the payment with the provider.", { expose: false });
     }
 
     const payment = await paymentResponse.json();
     if (payment.order_id !== razorpay_order_id) {
-      throw new Error("Payment order mismatch.");
+      throw new HttpError(400, "Payment order mismatch.");
     }
 
     if (payment.status !== "captured") {
       if (payment.status === "authorized") {
-        throw new Error("Payment is authorized but not captured yet.");
+        throw new HttpError(409, "Payment is authorized but not captured yet.");
       }
 
-      throw new Error(`Payment status is ${payment.status}, not completed.`);
+      throw new HttpError(400, `Payment status is ${payment.status}, not completed.`);
     }
 
     const cartRows = await fetchSelectedCart(adminClient, user.id);
     if (!cartRows.length) {
-      throw new Error("No selected cart items found for checkout.");
+      throw new HttpError(400, "No selected cart items found for checkout.");
     }
 
     const subtotal = cartRows.reduce((sum, row) => {
@@ -535,13 +577,13 @@ serve(async (request) => {
 
     const finalOrder = await fetchOrderWithItems(adminClient, order.id);
 
-    return jsonResponse({ order: finalOrder });
+    return withCors(request, jsonResponse({ order: finalOrder }));
   } catch (issue) {
-    return jsonResponse(
-      {
-        error: describeIssue(issue, "Unable to verify Razorpay payment."),
-      },
-      400,
-    );
+    logInternalError("verify-razorpay-payment", issue);
+    const status = isHttpError(issue) ? issue.status : 500;
+    const message = isHttpError(issue) && issue.expose
+      ? issue.message
+      : "Unable to verify the payment right now.";
+    return withCors(request, jsonResponse({ error: message }, status));
   }
 });

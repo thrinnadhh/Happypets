@@ -1,6 +1,13 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { corsHeaders } from "../_shared/cors.ts";
+import {
+  assertAllowedOrigin,
+  assertPostRequest,
+  getCorsHeaders,
+  HttpError,
+  logInternalError,
+} from "../_shared/cors.ts";
+import { enforceRateLimit } from "../_shared/rate-limit.ts";
 
 type CartRow = {
   id: string;
@@ -31,45 +38,39 @@ function calculateDiscountedPrice(price: number, discount?: number | null): numb
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: {
-      ...corsHeaders,
-      "Content-Type": "application/json",
-    },
+    headers: { "Content-Type": "application/json" },
   });
 }
 
-function describeIssue(issue: unknown, fallback: string): string {
-  if (issue instanceof Error && issue.message) {
-    return issue.message;
+function withCors(request: Request, response: Response): Response {
+  const headers = new Headers(response.headers);
+  Object.entries(getCorsHeaders(request)).forEach(([key, value]) => headers.set(key, value));
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+function isHttpError(issue: unknown): issue is HttpError {
+  return issue instanceof HttpError;
+}
+
+function sanitizeCouponCode(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
   }
 
-  if (issue && typeof issue === "object") {
-    const candidate = issue as {
-      message?: unknown;
-      details?: unknown;
-      hint?: unknown;
-      code?: unknown;
-    };
-
-    const parts = [
-      typeof candidate.message === "string" ? candidate.message : "",
-      typeof candidate.details === "string" ? candidate.details : "",
-      typeof candidate.hint === "string" ? candidate.hint : "",
-      typeof candidate.code === "string" ? `Code: ${candidate.code}` : "",
-    ].filter(Boolean);
-
-    if (parts.length) {
-      return parts.join(" | ");
-    }
-
-    try {
-      return JSON.stringify(issue);
-    } catch {
-      return fallback;
-    }
+  const normalized = value.trim().toUpperCase();
+  if (!normalized) {
+    return null;
   }
 
-  return fallback;
+  if (!/^[A-Z0-9_-]{3,32}$/.test(normalized)) {
+    throw new HttpError(400, "Coupon code format is invalid.");
+  }
+
+  return normalized;
 }
 
 async function getCurrentUser(request: Request) {
@@ -86,7 +87,7 @@ async function getCurrentUser(request: Request) {
 
   const { data, error } = await client.auth.getUser();
   if (error || !data.user) {
-    throw new Error("Unauthorized");
+    throw new HttpError(401, "Unauthorized");
   }
 
   return data.user;
@@ -150,7 +151,7 @@ async function resolveCoupon(
 
   const coupon = data as CouponRow;
   if (subtotal < Number(coupon.min_order_inr ?? 0)) {
-    throw new Error("Coupon minimum order value not met.");
+    throw new HttpError(400, "Coupon minimum order value not met.");
   }
 
   let discountAmount =
@@ -170,12 +171,20 @@ async function resolveCoupon(
 
 serve(async (request) => {
   if (request.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
+    return new Response("ok", { headers: getCorsHeaders(request) });
   }
 
   try {
+    assertAllowedOrigin(request);
+    assertPostRequest(request);
+
     const user = await getCurrentUser(request);
-    const { couponCode } = await request.json().catch(() => ({ couponCode: null }));
+    const body = await request.json().catch(() => ({}));
+    if (body && typeof body !== "object") {
+      throw new HttpError(400, "Invalid request body.");
+    }
+
+    const couponCode = sanitizeCouponCode((body as { couponCode?: unknown }).couponCode ?? null);
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -184,14 +193,20 @@ serve(async (request) => {
     const razorpaySecret = Deno.env.get("RAZORPAY_KEY_SECRET") ?? "";
 
     if (!razorpayKeyId || !razorpaySecret) {
-      throw new Error("Razorpay credentials are not configured.");
+      throw new HttpError(500, "Payment service is temporarily unavailable.", { expose: false });
     }
 
     const adminClient = createClient(supabaseUrl, serviceRoleKey);
+    await enforceRateLimit(adminClient, {
+      scopeKey: `payment:create-order:${user.id}`,
+      action: "create_razorpay_order",
+      maxRequests: 12,
+      windowSeconds: 300,
+    });
     const cartRows = await fetchSelectedCart(adminClient, user.id);
 
     if (!cartRows.length) {
-      throw new Error("No selected cart items found for checkout.");
+      throw new HttpError(400, "No selected cart items found for checkout.");
     }
 
     const subtotal = cartRows.reduce((sum, row) => {
@@ -222,24 +237,23 @@ serve(async (request) => {
     });
 
     if (!razorpayResponse.ok) {
-      const errorText = await razorpayResponse.text();
-      throw new Error(`Razorpay order creation failed: ${errorText}`);
+      throw new HttpError(502, "Unable to start the payment session.", { expose: false });
     }
 
     const razorpayOrder = await razorpayResponse.json();
 
-    return jsonResponse({
+    return withCors(request, jsonResponse({
       razorpayOrderId: razorpayOrder.id,
       amountPaise: razorpayOrder.amount,
       currency: razorpayOrder.currency,
       key: razorpayKeyId,
-    });
+    }));
   } catch (issue) {
-    return jsonResponse(
-      {
-        error: describeIssue(issue, "Unable to create Razorpay order."),
-      },
-      400,
-    );
+    logInternalError("create-razorpay-order", issue);
+    const status = isHttpError(issue) ? issue.status : 500;
+    const message = isHttpError(issue) && issue.expose
+      ? issue.message
+      : "Unable to create the payment session right now.";
+    return withCors(request, jsonResponse({ error: message }, status));
   }
 });

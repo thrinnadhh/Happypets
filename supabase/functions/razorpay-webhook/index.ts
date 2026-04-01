@@ -1,14 +1,23 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { corsHeaders } from "../_shared/cors.ts";
+import { getCorsHeaders, HttpError, logInternalError, timingSafeEqual } from "../_shared/cors.ts";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: {
-      ...corsHeaders,
       "Content-Type": "application/json",
     },
+  });
+}
+
+function withCors(request: Request, response: Response): Response {
+  const headers = new Headers(response.headers);
+  Object.entries(getCorsHeaders(request)).forEach(([key, value]) => headers.set(key, value));
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
   });
 }
 
@@ -28,21 +37,25 @@ async function hmacHex(secret: string, message: string): Promise<string> {
 
 serve(async (request) => {
   if (request.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
+    return new Response("ok", { headers: getCorsHeaders(request) });
   }
 
   try {
+    if (request.method !== "POST") {
+      throw new HttpError(405, "Method not allowed.");
+    }
+
     const rawBody = await request.text();
     const webhookSecret = Deno.env.get("RAZORPAY_WEBHOOK_SECRET") ?? "";
     const receivedSignature = request.headers.get("X-Razorpay-Signature") ?? "";
 
     if (!webhookSecret || !receivedSignature) {
-      throw new Error("Missing webhook secret or signature.");
+      throw new HttpError(400, "Missing webhook secret or signature.");
     }
 
     const expectedSignature = await hmacHex(webhookSecret, rawBody);
-    if (expectedSignature !== receivedSignature) {
-      throw new Error("Invalid webhook signature.");
+    if (!timingSafeEqual(expectedSignature, receivedSignature)) {
+      throw new HttpError(400, "Invalid webhook signature.");
     }
 
     const payload = JSON.parse(rawBody);
@@ -100,13 +113,13 @@ serve(async (request) => {
         .eq("razorpay_payment_id", refundEntity.payment_id);
     }
 
-    return jsonResponse({ ok: true, event });
+    return withCors(request, jsonResponse({ ok: true, event }));
   } catch (issue) {
-    return jsonResponse(
-      {
-        error: issue instanceof Error ? issue.message : "Webhook processing failed.",
-      },
-      400,
-    );
+    logInternalError("razorpay-webhook", issue);
+    const status = issue instanceof HttpError ? issue.status : 400;
+    const message = issue instanceof HttpError && issue.expose
+      ? issue.message
+      : "Webhook processing failed.";
+    return withCors(request, jsonResponse({ error: message }, status));
   }
 });

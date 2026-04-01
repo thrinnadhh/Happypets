@@ -185,9 +185,11 @@ const IMAGE_MIME_TYPES: Record<string, string> = {
   jpeg: "image/jpeg",
   jpg: "image/jpeg",
   png: "image/png",
-  svg: "image/svg+xml",
   webp: "image/webp",
 };
+
+const MAX_UPLOAD_SIZE_BYTES = 5 * 1024 * 1024;
+const isDevelopment = import.meta.env.DEV;
 
 const PRODUCT_SELECT = `
   id,
@@ -622,7 +624,7 @@ async function resolveCategoryId(category: ProductCategory): Promise<string> {
   const { data, error } = await client
     .from("categories")
     .select("id")
-    .or(`name.eq.${category},slug.eq.${category.toLowerCase()}`)
+    .eq("slug", category.toLowerCase())
     .maybeSingle();
 
   if (error) {
@@ -863,6 +865,17 @@ function resolveImageMimeType(file: Pick<File, "name" | "type">): string | null 
   return IMAGE_MIME_TYPES[extension] ?? null;
 }
 
+function validateImageUpload(file: Pick<File, "name" | "type" | "size">): void {
+  const contentType = resolveImageMimeType(file);
+  if (!contentType) {
+    throw new Error("Invalid file. Please upload a PNG, JPG, WEBP, AVIF, or GIF image.");
+  }
+
+  if (file.size > MAX_UPLOAD_SIZE_BYTES) {
+    throw new Error("Image is too large. Please upload a file under 5 MB.");
+  }
+}
+
 function buildStoragePath(folder: string, file: Pick<File, "name">): string {
   const rawExtension = file.name.split(".").pop()?.toLowerCase() ?? "jpg";
   const extension = IMAGE_MIME_TYPES[rawExtension] ? rawExtension : "jpg";
@@ -1056,11 +1069,8 @@ export async function uploadImageToSupabase(
   onProgress?: (value: number) => void,
 ): Promise<string> {
   const client = requireSupabaseClient();
-  const contentType = resolveImageMimeType(file);
-
-  if (!contentType) {
-    throw new Error("Invalid file. Please upload an image.");
-  }
+  validateImageUpload(file);
+  const contentType = resolveImageMimeType(file)!;
 
   let progress = 8;
   onProgress?.(progress);
@@ -1103,11 +1113,8 @@ export async function uploadBannerImageToSupabase(
   onProgress?: (value: number) => void,
 ): Promise<string> {
   const client = requireSupabaseClient();
-  const contentType = resolveImageMimeType(file);
-
-  if (!contentType) {
-    throw new Error("Invalid file. Please upload an image.");
-  }
+  validateImageUpload(file);
+  const contentType = resolveImageMimeType(file)!;
 
   let progress = 8;
   onProgress?.(progress);
@@ -1140,10 +1147,12 @@ export async function uploadBannerImageToSupabase(
       return publicUrl;
     } catch (issue) {
       if (bannerBucket !== supabaseBucket && isMissingStorageBucketError(issue, bannerBucket)) {
-        console.warn("[banners][supabase] banner bucket missing, falling back to product bucket", {
-          bannerBucket,
-          fallbackBucket: supabaseBucket,
-        });
+        if (isDevelopment) {
+          console.warn("[banners][supabase] banner bucket missing, falling back to product bucket", {
+            bannerBucket,
+            fallbackBucket: supabaseBucket,
+          });
+        }
         const publicUrl = await uploadAsset(supabaseBucket);
         onProgress?.(100);
         return publicUrl;
@@ -1514,11 +1523,13 @@ export async function saveBannerInSupabase(input: Omit<Banner, "id"> & { id?: st
     throw new Error("Banner position must be between 1 and 10.");
   }
 
-  console.log("[banners][supabase] save request", {
-    id: input.id ?? null,
-    position: input.position,
-    imageUrl,
-  });
+  if (isDevelopment) {
+    console.log("[banners][supabase] save request", {
+      id: input.id ?? null,
+      position: input.position,
+      imageUrl,
+    });
+  }
 
   const existingQuery = await client
     .from("banners")

@@ -13,6 +13,8 @@ import {
 import { useAuth } from "@/contexts/AuthContext";
 import { Banner } from "@/types";
 
+const isDevelopment = import.meta.env.DEV;
+
 const MAX_BANNER_SLOTS = 10;
 
 const adminLinks = [
@@ -56,10 +58,12 @@ export function AdminBannersPage(): JSX.Element {
     setMessage("");
 
     try {
-      console.log("[banners][frontend] save request", {
-        position,
-        imageUrl,
-      });
+      if (isDevelopment) {
+        console.log("[banners][frontend] save request", {
+          position,
+          imageUrl,
+        });
+      }
       const saved = await saveBannerInSupabase({ position, imageUrl });
       setBanners((current) => {
         const withoutSlot = current.filter((banner) => banner.position !== position && banner.id !== saved.id);
@@ -67,11 +71,13 @@ export function AdminBannersPage(): JSX.Element {
       });
       setMessage(`Banner slot ${position} saved.`);
     } catch (issue) {
-      console.error("[banners][frontend] save failed", {
-        position,
-        imageUrl,
-        issue,
-      });
+      if (isDevelopment) {
+        console.error("[banners][frontend] save failed", {
+          position,
+          imageUrl,
+          issue,
+        });
+      }
       setError(issue instanceof Error ? issue.message : "Unable to save banner.");
     } finally {
       setSavingPosition(null);
@@ -84,15 +90,19 @@ export function AdminBannersPage(): JSX.Element {
     setMessage("");
 
     try {
-      console.log("[banners][frontend] delete request", banner);
+      if (isDevelopment) {
+        console.log("[banners][frontend] delete request", banner);
+      }
       await deleteBannerFromSupabase(banner.id);
       setBanners((current) => current.filter((item) => item.id !== banner.id));
       setMessage(`Banner slot ${banner.position} removed.`);
     } catch (issue) {
-      console.error("[banners][frontend] delete failed", {
-        banner,
-        issue,
-      });
+      if (isDevelopment) {
+        console.error("[banners][frontend] delete failed", {
+          banner,
+          issue,
+        });
+      }
       setError(issue instanceof Error ? issue.message : "Unable to remove banner.");
     } finally {
       setSavingPosition(null);
@@ -176,21 +186,25 @@ function BannerSlotCard({
     setLocalError("");
     setLocalMessage("");
     setUploading(true);
-    console.log("[banners][frontend] upload file", {
-      position,
-      name: file.name,
-      size: file.size,
-      type: file.type,
-    });
+    if (isDevelopment) {
+      console.log("[banners][frontend] upload file", {
+        position,
+        name: file.name,
+        size: file.size,
+        type: file.type,
+      });
+    }
     try {
       const publicUrl = await uploadBannerImageToSupabase(file, setUploadProgress);
       setImageUrl(publicUrl);
       setLocalMessage("Upload complete. Save this slot to publish the banner.");
     } catch (issue) {
-      console.error("[banners][frontend] upload failed", {
-        position,
-        issue,
-      });
+      if (isDevelopment) {
+        console.error("[banners][frontend] upload failed", {
+          position,
+          issue,
+        });
+      }
       setLocalError(issue instanceof Error ? issue.message : "Upload failed.");
     } finally {
       if (inputRef.current) {
