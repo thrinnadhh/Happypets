@@ -1,5 +1,4 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   assertAllowedOrigin,
   assertPostRequest,
@@ -7,6 +6,7 @@ import {
   HttpError,
   logInternalError,
 } from "../_shared/cors.ts";
+import { getAuthenticatedUserFromRequest } from "../_shared/auth.ts";
 import { enforceRateLimit } from "../_shared/rate-limit.ts";
 import { reverseGeocodeCoordinates, sanitizeOptionalCoordinate } from "../_shared/delivery.ts";
 
@@ -31,26 +31,6 @@ function isHttpError(issue: unknown): issue is HttpError {
   return issue instanceof HttpError;
 }
 
-async function getCurrentUser(request: Request) {
-  const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-  const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-
-  const client = createClient(supabaseUrl, supabaseAnonKey, {
-    global: {
-      headers: {
-        Authorization: request.headers.get("Authorization") ?? "",
-      },
-    },
-  });
-
-  const { data, error } = await client.auth.getUser();
-  if (error || !data.user) {
-    throw new HttpError(401, "Unauthorized");
-  }
-
-  return data.user;
-}
-
 serve(async (request) => {
   if (request.method === "OPTIONS") {
     return new Response("ok", { headers: getCorsHeaders(request) });
@@ -60,7 +40,7 @@ serve(async (request) => {
     assertAllowedOrigin(request);
     assertPostRequest(request);
 
-    const user = await getCurrentUser(request);
+    const user = getAuthenticatedUserFromRequest(request);
     const body = await request.json().catch(() => {
       throw new HttpError(400, "Invalid request body.");
     }) as { lat?: unknown; lng?: unknown };
@@ -73,6 +53,7 @@ serve(async (request) => {
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const { createClient } = await import("https://esm.sh/@supabase/supabase-js@2");
     const adminClient = createClient(supabaseUrl, serviceRoleKey);
 
     await enforceRateLimit(adminClient, {

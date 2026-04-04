@@ -8,6 +8,7 @@ import {
   logInternalError,
   timingSafeEqual,
 } from "../_shared/cors.ts";
+import { getAuthenticatedUserFromRequest } from "../_shared/auth.ts";
 import { enforceRateLimit } from "../_shared/rate-limit.ts";
 import {
   assertShopCanFulfillCart,
@@ -131,26 +132,6 @@ async function hmacHex(secret: string, message: string): Promise<string> {
   return Array.from(new Uint8Array(signature))
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
-}
-
-async function getCurrentUser(request: Request) {
-  const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-  const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-
-  const client = createClient(supabaseUrl, supabaseAnonKey, {
-    global: {
-      headers: {
-        Authorization: request.headers.get("Authorization") ?? "",
-      },
-    },
-  });
-
-  const { data, error } = await client.auth.getUser();
-  if (error || !data.user) {
-    throw new HttpError(401, "Unauthorized");
-  }
-
-  return data.user;
 }
 
 function validateVerificationPayload(payload: {
@@ -321,7 +302,7 @@ serve(async (request) => {
     assertAllowedOrigin(request);
     assertPostRequest(request);
 
-    const user = await getCurrentUser(request);
+    const user = getAuthenticatedUserFromRequest(request);
     const body = await request.json().catch(() => {
       throw new HttpError(400, "Invalid request body.");
     }) as {

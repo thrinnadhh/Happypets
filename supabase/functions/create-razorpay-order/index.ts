@@ -7,6 +7,7 @@ import {
   HttpError,
   logInternalError,
 } from "../_shared/cors.ts";
+import { getAuthenticatedUserFromRequest } from "../_shared/auth.ts";
 import { enforceRateLimit } from "../_shared/rate-limit.ts";
 import {
   assertShopCanFulfillCart,
@@ -70,26 +71,6 @@ function sanitizeDeliveryQuoteId(value: unknown): string {
   return value.trim();
 }
 
-async function getCurrentUser(request: Request) {
-  const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-  const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-
-  const client = createClient(supabaseUrl, supabaseAnonKey, {
-    global: {
-      headers: {
-        Authorization: request.headers.get("Authorization") ?? "",
-      },
-    },
-  });
-
-  const { data, error } = await client.auth.getUser();
-  if (error || !data.user) {
-    throw new HttpError(401, "Unauthorized");
-  }
-
-  return data.user;
-}
-
 async function resolveCoupon(
   adminClient: ReturnType<typeof createClient>,
   couponCode: string | null,
@@ -145,7 +126,7 @@ serve(async (request) => {
     assertAllowedOrigin(request);
     assertPostRequest(request);
 
-    const user = await getCurrentUser(request);
+    const user = getAuthenticatedUserFromRequest(request);
     const body = await request.json().catch(() => ({}));
     if (body && typeof body !== "object") {
       throw new HttpError(400, "Invalid request body.");

@@ -7,6 +7,7 @@ import {
   HttpError,
   logInternalError,
 } from "../_shared/cors.ts";
+import { getAuthenticatedUserFromRequest } from "../_shared/auth.ts";
 import { enforceRateLimit } from "../_shared/rate-limit.ts";
 import {
   buildCartSignature,
@@ -42,26 +43,6 @@ function isHttpError(issue: unknown): issue is HttpError {
   return issue instanceof HttpError;
 }
 
-async function getCurrentUser(request: Request) {
-  const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-  const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-
-  const client = createClient(supabaseUrl, supabaseAnonKey, {
-    global: {
-      headers: {
-        Authorization: request.headers.get("Authorization") ?? "",
-      },
-    },
-  });
-
-  const { data, error } = await client.auth.getUser();
-  if (error || !data.user) {
-    throw new HttpError(401, "Unauthorized");
-  }
-
-  return data.user;
-}
-
 serve(async (request) => {
   if (request.method === "OPTIONS") {
     return new Response("ok", { headers: getCorsHeaders(request) });
@@ -71,7 +52,7 @@ serve(async (request) => {
     assertAllowedOrigin(request);
     assertPostRequest(request);
 
-    const user = await getCurrentUser(request);
+    const user = getAuthenticatedUserFromRequest(request);
     const body = await request.json().catch(() => {
       throw new HttpError(400, "Invalid request body.");
     }) as { address?: unknown; destinationLat?: unknown; destinationLng?: unknown };
