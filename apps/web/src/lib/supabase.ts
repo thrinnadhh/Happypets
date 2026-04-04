@@ -2542,7 +2542,7 @@ export async function fetchSavedAddressesFromSupabase(): Promise<SavedAddress[]>
       .select(selectClause)
       .order("is_default", { ascending: false })
       .order("created_at", { ascending: false })
-      .limit(6);
+      .limit(3);
 
     if (error) {
       throw error;
