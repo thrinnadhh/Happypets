@@ -19,6 +19,7 @@ import { LoginPage } from "@/pages/LoginPage";
 import { SuperAdminAdminsPage } from "@/pages/superadmin/AdminsPage";
 import { SuperAdminAnalyticsPage } from "@/pages/superadmin/AnalyticsPage";
 import { SuperAdminDashboardPage } from "@/pages/superadmin/DashboardPage";
+import { SuperAdminShopsPage } from "@/pages/superadmin/ShopsPage";
 import { RoleRedirect } from "@/components/common/RoleRedirect";
 
 export default function App(): JSX.Element {
@@ -157,6 +158,14 @@ export default function App(): JSX.Element {
           element={
             <ProtectedRoute allowedRoles={["superadmin"]}>
               <SuperAdminAdminsPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/superadmin/shops"
+          element={
+            <ProtectedRoute allowedRoles={["superadmin"]}>
+              <SuperAdminShopsPage />
             </ProtectedRoute>
           }
         />

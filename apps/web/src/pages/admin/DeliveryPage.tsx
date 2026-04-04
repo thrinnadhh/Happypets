@@ -11,11 +11,20 @@ import {
   upsertAdminDeliveryConfigInSupabase,
 } from "@/lib/supabase";
 import { adminLinks } from "@/pages/admin/navigation";
-import { LatLng, getDefaultIndiaCenter, hasTomTomPublicKey, reverseGeocodeTomTom } from "@/lib/tomtom";
+import {
+  LatLng,
+  buildLocationQuery,
+  extractStructuredLocation,
+  getDefaultIndiaCenter,
+  hasTomTomPublicKey,
+  reverseGeocodeTomTom,
+} from "@/lib/tomtom";
 import { AdminDeliveryConfig, DeliveryAddressSuggestion } from "@/types";
 
 type DeliveryFormState = {
   originAddress: string;
+  originCity: string;
+  originPincode: string;
   originLat: string;
   originLng: string;
   baseFeeInr: string;
@@ -26,8 +35,11 @@ type DeliveryFormState = {
 };
 
 function buildFormState(config: AdminDeliveryConfig): DeliveryFormState {
+  const structuredOrigin = extractStructuredLocation({ address: config.originAddress });
   return {
-    originAddress: config.originAddress,
+    originAddress: structuredOrigin.addressLine,
+    originCity: structuredOrigin.city,
+    originPincode: structuredOrigin.pincode,
     originLat: config.originLat == null ? "" : String(config.originLat),
     originLng: config.originLng == null ? "" : String(config.originLng),
     baseFeeInr: String(config.baseFeeInr),
@@ -49,6 +61,10 @@ function validateForm(form: DeliveryFormState): Partial<Record<keyof DeliveryFor
 
   if (!form.originAddress.trim()) {
     errors.originAddress = "Origin address is required.";
+  }
+
+  if (form.originPincode.trim() && !/^\d{6}$/.test(form.originPincode.trim())) {
+    errors.originPincode = "Pincode must be 6 digits.";
   }
 
   if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90) {
@@ -110,14 +126,27 @@ export function AdminDeliveryPage(): JSX.Element {
   }, []);
 
   useEffect(() => {
-    const query = form?.originAddress.trim() ?? "";
+    const query = form
+      ? buildLocationQuery({
+          addressLine: form.originAddress,
+          city: form.originCity,
+          pincode: form.originPincode,
+        })
+      : "";
     const isSavedOrigin =
       Boolean(config) &&
-      query === config?.originAddress.trim() &&
+      query === buildLocationQuery(extractStructuredLocation({ address: config?.originAddress ?? "" })) &&
       form?.originLat === (config?.originLat == null ? "" : String(config.originLat)) &&
       form?.originLng === (config?.originLng == null ? "" : String(config.originLng));
+    const isSelectedOrigin =
+      Boolean(selectedOrigin) &&
+      query === buildLocationQuery({
+        addressLine: selectedOrigin?.address ?? "",
+        city: selectedOrigin?.city ?? "",
+        pincode: selectedOrigin?.pincode ?? "",
+      });
 
-    if (!form || query.length < 5 || selectedOrigin?.address === query || isSavedOrigin) {
+    if (!form || query.length < 5 || isSelectedOrigin || isSavedOrigin) {
       setOriginSuggestions([]);
       setSearchingOrigins(false);
       return;
@@ -148,11 +177,11 @@ export function AdminDeliveryPage(): JSX.Element {
       cancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [config, form, selectedOrigin?.address]);
+  }, [config, form, selectedOrigin]);
 
   const formErrors = useMemo(() => (form ? validateForm(form) : {}), [form]);
   const hasFormErrors = Object.keys(formErrors).length > 0;
-  const canShowMap = hasTomTomPublicKey();
+  const canResolvePinnedAddress = hasTomTomPublicKey();
   const currentMapPosition: LatLng | null = useMemo(() => {
     if (!form) {
       return null;
@@ -170,12 +199,15 @@ export function AdminDeliveryPage(): JSX.Element {
     ? { lat: selectedOrigin.latitude, lng: selectedOrigin.longitude }
     : getDefaultIndiaCenter());
 
-  const handleOriginInputChange = (value: string): void => {
+  const handleOriginFieldChange = (
+    field: "originAddress" | "originCity" | "originPincode",
+    value: string,
+  ): void => {
     if (!form) {
       return;
     }
 
-    setForm((current) => current ? { ...current, originAddress: value } : current);
+    setForm((current) => current ? { ...current, [field]: value } : current);
     setSelectedOrigin(null);
     setOriginSuggestions([]);
     setOriginSearchError("");
@@ -190,6 +222,8 @@ export function AdminDeliveryPage(): JSX.Element {
         ? {
             ...current,
             originAddress: suggestion.address,
+            originCity: suggestion.city,
+            originPincode: suggestion.pincode,
             originLat: String(suggestion.latitude),
             originLng: String(suggestion.longitude),
           }
@@ -198,6 +232,11 @@ export function AdminDeliveryPage(): JSX.Element {
 
   const handlePickOriginFromMap = async (position: LatLng): Promise<void> => {
     if (!form) {
+      return;
+    }
+
+    if (!canResolvePinnedAddress) {
+      setMapError("Add a browser geocoding key like VITE_LOCATIONIQ_API_KEY or VITE_TOMTOM_API_KEY to resolve a clicked pin into an address.");
       return;
     }
 
@@ -222,6 +261,8 @@ export function AdminDeliveryPage(): JSX.Element {
           ? {
               ...current,
               originAddress: result.address,
+              originCity: result.city,
+              originPincode: result.pincode,
               originLat: result.latitude.toFixed(6),
               originLng: result.longitude.toFixed(6),
             }
@@ -304,7 +345,7 @@ export function AdminDeliveryPage(): JSX.Element {
                 <p className="text-sm font-semibold uppercase tracking-[0.18em] text-brand-700">Delivery</p>
                 <h1 className="mt-3 font-heading text-5xl font-semibold text-ink">Configure route-based delivery</h1>
                 <p className="mt-4 max-w-2xl text-sm leading-7 text-slate-600">
-                  Quotes are calculated from your shop&apos;s dispatch origin with TomTom routing. Customers can only check out one shop at a time, so these settings directly control their delivery fee.
+                  Quotes are calculated from your shop&apos;s dispatch origin with route-based delivery pricing. Customers can only check out one shop at a time, so these settings directly control their delivery fee.
                 </p>
                 <p className="mt-4 text-sm text-slate-500">Shop: {config.shopName}</p>
                 {message ? <p className="mt-4 text-sm text-emerald-600">{message}</p> : null}
@@ -319,15 +360,39 @@ export function AdminDeliveryPage(): JSX.Element {
                       <span>Dispatch origin address</span>
                       <input
                         value={form.originAddress}
-                        onChange={(event) => handleOriginInputChange(event.target.value)}
+                        onChange={(event) => handleOriginFieldChange("originAddress", event.target.value)}
                         className="input"
-                        placeholder="Search your shop, warehouse, or landmark"
+                        placeholder="House / building / street / landmark"
                         required
                       />
                       {formErrors.originAddress ? <p className="text-xs text-rose-500">{formErrors.originAddress}</p> : null}
                     </label>
 
-                    {searchingOrigins ? <p className="text-xs text-slate-500">Searching TomTom addresses...</p> : null}
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <label className="field">
+                        <span>City</span>
+                        <input
+                          value={form.originCity}
+                          onChange={(event) => handleOriginFieldChange("originCity", event.target.value)}
+                          className="input"
+                          placeholder="Tirupati"
+                        />
+                      </label>
+
+                      <label className="field">
+                        <span>Pincode</span>
+                        <input
+                          value={form.originPincode}
+                          onChange={(event) => handleOriginFieldChange("originPincode", event.target.value.replace(/\D/g, "").slice(0, 6))}
+                          className="input"
+                          inputMode="numeric"
+                          placeholder="517502"
+                        />
+                        {formErrors.originPincode ? <p className="text-xs text-rose-500">{formErrors.originPincode}</p> : null}
+                      </label>
+                    </div>
+
+                    {searchingOrigins ? <p className="text-xs text-slate-500">Searching delivery addresses...</p> : null}
                     {originSearchError ? <p className="text-xs text-rose-500">{originSearchError}</p> : null}
                     {originSuggestions.length ? (
                       <div className="space-y-2 rounded-[24px] border border-[#eadfce] bg-white p-3">
@@ -352,29 +417,28 @@ export function AdminDeliveryPage(): JSX.Element {
                         <div>
                           <p className="text-sm font-medium text-ink">Pin the dispatch location</p>
                           <p className="mt-1 text-sm text-slate-500">
-                            Search first, or click directly on the map to refine the warehouse location.
+                            Add address line, city, and pincode for cleaner matches, then click or drag the pin to refine the warehouse location.
                           </p>
                         </div>
                         {resolvingMapPin ? <p className="text-xs text-slate-500">Resolving pin...</p> : null}
                       </div>
-                      {canShowMap ? (
-                        <div className="mt-4 space-y-3">
-                          <PinLocationMap
-                            center={mapCenter}
-                            marker={currentMapPosition}
-                            onPick={(position) => {
-                              void handlePickOriginFromMap(position);
-                            }}
-                          />
-                          <p className="text-xs text-slate-500">
-                            Click the map or drag the marker to set the exact dispatch point.
-                          </p>
-                        </div>
-                      ) : (
-                        <p className="mt-4 text-sm text-amber-700">
-                          Add `VITE_TOMTOM_API_KEY` or `NEXT_PUBLIC_TOMTOM_API_KEY` to enable map pin selection in the browser.
+                      <div className="mt-4 space-y-3">
+                        <PinLocationMap
+                          center={mapCenter}
+                          marker={currentMapPosition}
+                          onPick={(position) => {
+                            void handlePickOriginFromMap(position);
+                          }}
+                        />
+                        <p className="text-xs text-slate-500">
+                          Click the map or drag the marker to set the exact dispatch point.
                         </p>
-                      )}
+                        {!canResolvePinnedAddress ? (
+                          <p className="text-xs text-amber-700">
+                            Add a browser geocoding key like `VITE_LOCATIONIQ_API_KEY` or `VITE_TOMTOM_API_KEY` to auto-fill the address after pinning.
+                          </p>
+                        ) : null}
+                      </div>
                       {mapError ? <p className="mt-3 text-xs text-rose-500">{mapError}</p> : null}
                     </div>
 

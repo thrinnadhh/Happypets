@@ -12,10 +12,11 @@ import {
 } from "@/data/catalog";
 import { categoryBrands } from "@/data/mockData";
 import { isManufactureDateInvalid } from "@/lib/commerce";
-import { Product, ProductCategory, ProductTag } from "@/types";
+import { Product, ProductCategory, ProductShopInventory, ProductTag, ShopLocation } from "@/types";
 import { uploadImageToSupabase } from "@/lib/supabase";
 
 type ProductFormInput = Omit<Product, "id" | "soldCount" | "revenue">;
+const OTHER_BRAND_VALUE = "__other__";
 
 const emptyForm: ProductFormInput = {
   name: "",
@@ -37,10 +38,17 @@ const emptyForm: ProductFormInput = {
   expiryDate: "",
   rating: 4.8,
   gallery: [],
+  shopInventories: [],
 };
 
-function validateProductForm(form: ProductFormInput): Partial<Record<"price" | "quantity" | "discount" | "packetCount" | "dates", string>> {
-  const errors: Partial<Record<"price" | "quantity" | "discount" | "packetCount" | "dates", string>> = {};
+function validateProductForm(
+  form: ProductFormInput,
+): Partial<Record<"brand" | "price" | "quantity" | "discount" | "packetCount" | "dates" | "shops", string>> {
+  const errors: Partial<Record<"brand" | "price" | "quantity" | "discount" | "packetCount" | "dates" | "shops", string>> = {};
+
+  if (!form.brand.trim()) {
+    errors.brand = "Brand name is required.";
+  }
 
   if (form.price <= 0) {
     errors.price = "Price must be greater than 0.";
@@ -58,6 +66,14 @@ function validateProductForm(form: ProductFormInput): Partial<Record<"price" | "
     errors.packetCount = "Packet count must be at least 1.";
   }
 
+  if (!form.shopInventories?.length) {
+    errors.shops = "Select at least one fulfillment shop.";
+  }
+
+  if (form.shopInventories?.some((inventory) => inventory.stockQuantity < 0)) {
+    errors.quantity = "Per-shop stock cannot be negative.";
+  }
+
   if (isManufactureDateInvalid(form.manufactureDate, form.expiryDate)) {
     errors.dates = "Manufacture date must be before expiry date.";
   }
@@ -65,18 +81,75 @@ function validateProductForm(form: ProductFormInput): Partial<Record<"price" | "
   return errors;
 }
 
+function buildInitialInventories(
+  product: Product | null | undefined,
+  availableShops: ShopLocation[],
+): ProductShopInventory[] {
+  if (product?.shopInventories?.length) {
+    return product.shopInventories;
+  }
+
+  if (product?.shopId) {
+    const matchedShop = availableShops.find((shop) => shop.id === product.shopId);
+    return [
+      {
+        shopId: product.shopId,
+        shopName: matchedShop?.name ?? "Primary shop",
+        stockQuantity: product.quantity,
+        isActive: true,
+      },
+    ];
+  }
+
+  const firstShop = availableShops[0];
+  if (!firstShop) {
+    return [];
+  }
+
+  return [{
+    shopId: firstShop.id,
+    shopName: firstShop.name,
+    stockQuantity: 0,
+    isActive: true,
+  }];
+}
+
+function calculateTotalQuantity(inventories: ProductShopInventory[] | undefined): number {
+  return (inventories ?? []).reduce((sum, inventory) => sum + Math.max(0, inventory.stockQuantity), 0);
+}
+
+function buildBrandOptions(
+  category: ProductCategory,
+  existingBrandsByCategory: Record<ProductCategory, string[]>,
+  currentBrand?: string,
+): string[] {
+  const catalogBrands = [...categoryBrands[category]];
+  const dynamicBrands = existingBrandsByCategory[category] ?? [];
+  const merged = [...catalogBrands, ...dynamicBrands, currentBrand ?? ""]
+    .map((brand) => brand.trim())
+    .filter(Boolean);
+
+  return [...new Set(merged)].sort((left, right) => left.localeCompare(right));
+}
+
 export function ProductFormModal({
   open,
   product,
+  availableShops,
+  existingBrandsByCategory,
   onClose,
   onSave,
 }: {
   open: boolean;
   product?: Product | null;
+  availableShops: ShopLocation[];
+  existingBrandsByCategory: Record<ProductCategory, string[]>;
   onClose: () => void;
   onSave: (input: ProductFormInput) => Promise<void>;
 }): JSX.Element {
   const [form, setForm] = useState<ProductFormInput>(emptyForm);
+  const [brandMode, setBrandMode] = useState<"preset" | "other">("preset");
+  const [customBrand, setCustomBrand] = useState("");
   const [preview, setPreview] = useState("");
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -85,24 +158,41 @@ export function ProductFormModal({
   const inputRef = useRef<HTMLInputElement | null>(null);
   const validationErrors = validateProductForm(form);
   const hasValidationErrors = Object.keys(validationErrors).length > 0;
+  const brandOptions = buildBrandOptions(form.category, existingBrandsByCategory, form.brand);
+  const brandValue = brandMode === "other" ? customBrand : form.brand;
 
   useEffect(() => {
     if (product) {
       const { id, soldCount, revenue, shopId, createdAt, ...rest } = product;
+      const shopInventories = buildInitialInventories(product, availableShops);
+      const nextBrandOptions = buildBrandOptions(rest.category, existingBrandsByCategory, rest.brand);
       setForm({
         ...rest,
+        quantity: calculateTotalQuantity(shopInventories),
+        shopInventories,
         lifeStage:
           rest.lifeStage || (categoryLifeStages[rest.category]?.[0] ?? ""),
       });
+      setBrandMode(nextBrandOptions.includes(rest.brand) ? "preset" : "other");
+      setCustomBrand(rest.brand);
       setPreview(rest.image);
       return;
     }
 
-    setForm(emptyForm);
+    const shopInventories = buildInitialInventories(null, availableShops);
+    const defaultBrand = categoryBrands.Dog[0];
+    setForm({
+      ...emptyForm,
+      brand: defaultBrand,
+      quantity: calculateTotalQuantity(shopInventories),
+      shopInventories,
+    });
+    setBrandMode("preset");
+    setCustomBrand("");
     setPreview("");
     setUploadProgress(0);
     setUploadError("");
-  }, [product, open]);
+  }, [product, open, availableShops, existingBrandsByCategory]);
 
   useEffect(() => {
     return () => {
@@ -114,13 +204,17 @@ export function ProductFormModal({
 
   const handleCategoryChange = (category: ProductCategory): void => {
     const nextLifeStages = categoryLifeStages[category] ?? [];
+    const nextBrandOptions = buildBrandOptions(category, existingBrandsByCategory);
+    const nextBrand = nextBrandOptions[0] ?? categoryBrands[category][0];
     setForm((current) => ({
       ...current,
       category,
       lifeStage: nextLifeStages.length ? nextLifeStages[0] : "",
       displaySection: current.displaySection === current.category ? category : current.displaySection,
-      brand: categoryBrands[category][0],
+      brand: nextBrand,
     }));
+    setBrandMode("preset");
+    setCustomBrand("");
   };
 
   const toggleTag = (tag: ProductTag): void => {
@@ -130,6 +224,45 @@ export function ProductFormModal({
         ? current.tags.filter((value) => value !== tag)
         : sortTags([...(current.tags ?? []), tag]),
     }));
+  };
+
+  const toggleShop = (shop: ShopLocation): void => {
+    setForm((current) => {
+      const existing = current.shopInventories?.find((inventory) => inventory.shopId === shop.id);
+      const shopInventories = existing
+        ? (current.shopInventories ?? []).filter((inventory) => inventory.shopId !== shop.id)
+        : [
+            ...(current.shopInventories ?? []),
+            {
+              shopId: shop.id,
+              shopName: shop.name,
+              stockQuantity: 0,
+              isActive: shop.status === "active",
+            },
+          ];
+
+      return {
+        ...current,
+        shopInventories,
+        quantity: calculateTotalQuantity(shopInventories),
+      };
+    });
+  };
+
+  const updateInventoryStock = (shopId: string, stockQuantity: number): void => {
+    setForm((current) => {
+      const shopInventories = (current.shopInventories ?? []).map((inventory) =>
+        inventory.shopId === shopId
+          ? { ...inventory, stockQuantity: Math.max(0, stockQuantity || 0) }
+          : inventory,
+      );
+
+      return {
+        ...current,
+        shopInventories,
+        quantity: calculateTotalQuantity(shopInventories),
+      };
+    });
   };
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
@@ -145,6 +278,8 @@ export function ProductFormModal({
     try {
       await onSave({
         ...form,
+        brand: brandValue.trim(),
+        quantity: calculateTotalQuantity(form.shopInventories),
         gallery: form.gallery?.length ? form.gallery : [form.image],
       });
       onClose();
@@ -241,14 +376,40 @@ export function ProductFormModal({
               <label className="field">
                 <span>Brand Name</span>
                 <select
-                  value={form.brand}
-                  onChange={(event) => setForm((current) => ({ ...current, brand: event.target.value }))}
+                  value={brandMode === "other" ? OTHER_BRAND_VALUE : form.brand}
+                  onChange={(event) => {
+                    const nextValue = event.target.value;
+                    if (nextValue === OTHER_BRAND_VALUE) {
+                      setBrandMode("other");
+                      setCustomBrand(form.brand);
+                      return;
+                    }
+
+                    setBrandMode("preset");
+                    setCustomBrand("");
+                    setForm((current) => ({ ...current, brand: nextValue }));
+                  }}
                   className="input"
                 >
-                  {categoryBrands[form.category].map((brand) => (
+                  {brandOptions.map((brand) => (
                     <option key={brand}>{brand}</option>
                   ))}
+                  <option value={OTHER_BRAND_VALUE}>Other</option>
                 </select>
+                {brandMode === "other" ? (
+                  <input
+                    value={customBrand}
+                    onChange={(event) => {
+                      const nextBrand = event.target.value;
+                      setCustomBrand(nextBrand);
+                      setForm((current) => ({ ...current, brand: nextBrand }));
+                    }}
+                    className="input mt-3"
+                    placeholder="Enter brand name"
+                    required
+                  />
+                ) : null}
+                {validationErrors.brand ? <p className="text-xs text-rose-500">{validationErrors.brand}</p> : null}
               </label>
 
               {categoryLifeStages[form.category]?.length ? (
@@ -331,6 +492,77 @@ export function ProductFormModal({
                 <p className="text-xs text-slate-500">Use tags to control homepage highlights and category-page filters.</p>
               </div>
 
+              <div className="field md:col-span-2">
+                <div className="flex items-center justify-between gap-3">
+                  <span>Fulfillment Shops</span>
+                  <p className="text-sm font-semibold text-brand-700">
+                    Total stock: {calculateTotalQuantity(form.shopInventories)}
+                  </p>
+                </div>
+                {availableShops.length ? (
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {availableShops.map((shop) => {
+                      const selectedInventory = form.shopInventories?.find((inventory) => inventory.shopId === shop.id);
+                      const selected = Boolean(selectedInventory);
+
+                      return (
+                        <div
+                          key={shop.id}
+                          className={`rounded-[24px] border p-4 transition ${
+                            selected
+                              ? "border-brand-300 bg-brand-50/60"
+                              : "border-[#e7d9c3] bg-white"
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="font-semibold text-ink">{shop.name}</p>
+                              <p className="text-xs uppercase tracking-[0.16em] text-slate-500">{shop.slug}</p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => toggleShop(shop)}
+                              className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                                selected
+                                  ? "bg-brand-700 text-white"
+                                  : "bg-[#f6efe3] text-slate-600"
+                              }`}
+                            >
+                              {selected ? "Selected" : "Add"}
+                            </button>
+                          </div>
+
+                          <div className="mt-4 grid gap-3 md:grid-cols-2">
+                            <div className="rounded-[18px] bg-white/80 px-3 py-3">
+                              <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Coordinates</p>
+                              <p className="mt-2 text-sm text-ink">
+                                {shop.originLat?.toFixed(6) ?? "NA"}, {shop.originLng?.toFixed(6) ?? "NA"}
+                              </p>
+                            </div>
+                            <label className="field">
+                              <span>Stock For This Shop</span>
+                              <input
+                                type="number"
+                                min="0"
+                                disabled={!selected}
+                                value={selectedInventory?.stockQuantity ?? 0}
+                                onChange={(event) => updateInventoryStock(shop.id, Number(event.target.value))}
+                                className="input"
+                              />
+                            </label>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="rounded-[22px] border border-dashed border-[#d8cab4] px-4 py-4 text-sm text-slate-500">
+                    No active shops are available yet. Ask the super admin to configure shop locations first.
+                  </p>
+                )}
+                {validationErrors.shops ? <p className="text-xs text-rose-500">{validationErrors.shops}</p> : null}
+              </div>
+
               <div className="field">
                 <span>Upload Image</span>
                 <input
@@ -393,17 +625,9 @@ export function ProductFormModal({
               </label>
 
               <label className="field">
-                <span>Quantity</span>
-                <input
-                  type="number"
-                  min="0"
-                  value={form.quantity}
-                  onChange={(event) =>
-                    setForm((current) => ({ ...current, quantity: Number(event.target.value) }))
-                  }
-                  className="input"
-                  required
-                />
+                <span>Total Quantity</span>
+                <input value={calculateTotalQuantity(form.shopInventories)} className="input bg-slate-50" readOnly />
+                <p className="text-xs text-slate-500">This total is calculated automatically from the selected fulfillment shops.</p>
                 {validationErrors.quantity ? <p className="text-xs text-rose-500">{validationErrors.quantity}</p> : null}
               </label>
 

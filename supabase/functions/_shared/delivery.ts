@@ -6,7 +6,7 @@ type DeliveryProductRow = {
   images?: string[] | null;
   price_inr: number;
   discount: number | null;
-  shop_id: string;
+  shop_id?: string | null;
   is_sample?: boolean | null;
 };
 
@@ -49,6 +49,8 @@ export type TomTomAddressResult = {
   id: string;
   address: string;
   secondaryText: string;
+  city: string;
+  pincode: string;
   latitude: number;
   longitude: number;
 };
@@ -63,6 +65,22 @@ type ShopDeliveryConfigRow = {
   extra_per_km_inr: number | string;
   max_service_distance_km: number | string;
   is_active: boolean | null;
+};
+
+type ShopOriginRow = {
+  id: string;
+  name: string;
+  status: string;
+  origin_lat: number | string | null;
+  origin_lng: number | string | null;
+};
+
+type DeliveryInventoryRow = {
+  product_id: string;
+  shop_id: string;
+  stock_quantity: number | string;
+  is_active: boolean | null;
+  shop?: ShopOriginRow | ShopOriginRow[] | null;
 };
 
 type DeliveryQuoteRow = {
@@ -87,6 +105,7 @@ type TomTomSearchApiResponse = {
       freeformAddress?: string;
       municipality?: string;
       countrySubdivision?: string;
+      postalCode?: string;
     };
     position?: {
       lat?: number;
@@ -105,6 +124,28 @@ type TomTomRouteApiResponse = {
   }>;
 };
 
+type LocationIqAddressResult = {
+  place_id?: string | number;
+  display_name?: string;
+  lat?: string | number;
+  lon?: string | number;
+  address?: {
+    city?: string;
+    town?: string;
+    village?: string;
+    county?: string;
+    state?: string;
+    postcode?: string;
+  };
+};
+
+type LocationIqDirectionsResponse = {
+  routes?: Array<{
+    distance?: number;
+    duration?: number;
+  }>;
+};
+
 function isMissingColumnError(issue: unknown, columns: string[]): boolean {
   if (!issue || typeof issue !== "object") {
     return false;
@@ -115,6 +156,18 @@ function isMissingColumnError(issue: unknown, columns: string[]): boolean {
     : "";
 
   return columns.some((column) => message.includes(column.toLowerCase()));
+}
+
+function isMissingInventoryTableError(issue: unknown): boolean {
+  if (!issue || typeof issue !== "object") {
+    return false;
+  }
+
+  const message = "message" in issue && typeof issue.message === "string"
+    ? issue.message.toLowerCase()
+    : "";
+
+  return message.includes("product_shop_inventory");
 }
 
 function mapQuoteRow(row: DeliveryQuoteRow): DeliveryQuoteRecord {
@@ -252,8 +305,7 @@ export function ensureSingleShopCart(cartRows: DeliveryCartRow[]): string {
 export function buildCartSignature(cartRows: DeliveryCartRow[]): string {
   return cartRows
     .map((row) => {
-      const product = getCartProduct(row);
-      return `${row.id}:${row.product_id}:${product?.shop_id ?? ""}:${row.quantity}`;
+      return `${row.id}:${row.product_id}:${row.quantity}`;
     })
     .sort()
     .join("|");
@@ -263,6 +315,25 @@ export async function fetchShopDeliveryConfig(
   adminClient: ReturnType<typeof createClient>,
   shopId: string,
 ): Promise<ShopDeliveryConfig> {
+  const { data: shop, error: shopError } = await adminClient
+    .from("shops")
+    .select("id, name, status, origin_lat, origin_lng")
+    .eq("id", shopId)
+    .maybeSingle();
+
+  if (shopError) {
+    throw shopError;
+  }
+
+  if (!shop) {
+    throw new HttpError(400, "Shop is unavailable for fulfillment.");
+  }
+
+  const shopRow = shop as ShopOriginRow;
+  if (shopRow.status !== "active") {
+    throw new HttpError(400, "Shop is not active for fulfillment.");
+  }
+
   const { data, error } = await adminClient
     .from("shop_delivery_configs")
     .select(
@@ -284,11 +355,18 @@ export async function fetchShopDeliveryConfig(
     throw new HttpError(400, "Delivery is currently unavailable for this shop.");
   }
 
+  const originLat = shopRow.origin_lat == null ? Number(config.origin_lat) : Number(shopRow.origin_lat);
+  const originLng = shopRow.origin_lng == null ? Number(config.origin_lng) : Number(shopRow.origin_lng);
+
+  if (!Number.isFinite(originLat) || !Number.isFinite(originLng)) {
+    throw new HttpError(400, "Dispatch coordinates are not configured for this shop yet.");
+  }
+
   return {
     shopId: config.shop_id,
     originAddress: config.origin_address,
-    originLat: Number(config.origin_lat),
-    originLng: Number(config.origin_lng),
+    originLat,
+    originLng,
     baseFeeInr: Number(config.base_fee_inr),
     includedDistanceKm: Number(config.included_distance_km),
     extraPerKmInr: Number(config.extra_per_km_inr),
@@ -306,10 +384,72 @@ function getTomTomApiKey(): string {
   return key.trim();
 }
 
+function getLocationIqApiKey(): string {
+  return (Deno.env.get("LOCATIONIQ_API_KEY") ?? Deno.env.get("NEXT_PUBLIC_LOCATIONIQ_API_KEY") ?? "").trim();
+}
+
+function useLocationIq(): boolean {
+  return Boolean(getLocationIqApiKey());
+}
+
 export async function searchTomTomAddresses(
   query: string,
   options?: { limit?: number; typeahead?: boolean },
 ): Promise<TomTomAddressResult[]> {
+  if (useLocationIq()) {
+    const normalizedQuery = sanitizeAddressText(query, "Address query");
+    const key = getLocationIqApiKey();
+    const limit = options?.limit ?? 5;
+    const endpoint = options?.typeahead === false ? "search" : "autocomplete";
+    const url = new URL(`https://us1.locationiq.com/v1/${endpoint}`);
+    url.searchParams.set("key", key);
+    url.searchParams.set("q", normalizedQuery);
+    url.searchParams.set("format", "json");
+    url.searchParams.set("normalizeaddress", "1");
+    url.searchParams.set("countrycodes", "in");
+    url.searchParams.set("addressdetails", "1");
+    url.searchParams.set("limit", String(limit));
+
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new HttpError(502, "Unable to search addresses right now.", { expose: false });
+    }
+
+    const payload = await response.json() as LocationIqAddressResult[] | { error?: string };
+    const results = Array.isArray(payload) ? payload : [];
+
+    return results.flatMap((result) => {
+      const address = result.display_name?.trim() ?? "";
+      const latitude = Number(result.lat);
+      const longitude = Number(result.lon);
+      const city = result.address?.city?.trim() ??
+        result.address?.town?.trim() ??
+        result.address?.village?.trim() ??
+        result.address?.county?.trim() ??
+        "";
+      const state = result.address?.state?.trim() ?? "";
+      const pincode = result.address?.postcode?.trim() ?? "";
+
+      if (!address || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+        return [];
+      }
+
+      const secondaryText = [city, state, pincode]
+        .filter((value) => value.length > 0)
+        .join(", ");
+
+      return [{
+        id: String(result.place_id ?? `${latitude},${longitude}`),
+        address,
+        secondaryText,
+        city,
+        pincode,
+        latitude,
+        longitude,
+      }];
+    });
+  }
+
   const normalizedQuery = sanitizeAddressText(query, "Address query");
   const key = getTomTomApiKey();
   const limit = options?.limit ?? 5;
@@ -341,12 +481,16 @@ export async function searchTomTomAddresses(
     const secondaryText = [result.address?.municipality, result.address?.countrySubdivision]
       .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
       .join(", ");
+    const city = result.address?.municipality?.trim() ?? "";
+    const pincode = result.address?.postalCode?.trim() ?? "";
 
     return [
       {
         id: String(result.id ?? `${latitude},${longitude}`),
         address,
         secondaryText,
+        city,
+        pincode,
         latitude,
         longitude,
       },
@@ -371,6 +515,33 @@ export async function calculateRouteWithTomTom(
   destinationLat: number,
   destinationLng: number,
 ): Promise<{ distanceMeters: number; durationSeconds: number }> {
+  if (useLocationIq()) {
+    const key = getLocationIqApiKey();
+    const url = new URL(
+      `https://us1.locationiq.com/v1/directions/driving/${originLng},${originLat};${destinationLng},${destinationLat}`,
+    );
+    url.searchParams.set("key", key);
+    url.searchParams.set("overview", "false");
+    url.searchParams.set("steps", "false");
+    url.searchParams.set("annotations", "false");
+
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new HttpError(502, "Unable to calculate the delivery route right now.", { expose: false });
+    }
+
+    const payload = await response.json() as LocationIqDirectionsResponse;
+    const route = payload.routes?.[0];
+    const distanceMeters = Number(route?.distance ?? 0);
+    const durationSeconds = Number(route?.duration ?? 0);
+
+    if (!Number.isFinite(distanceMeters) || distanceMeters < 0 || !Number.isFinite(durationSeconds) || durationSeconds < 0) {
+      throw new HttpError(502, "Unable to calculate the delivery route right now.", { expose: false });
+    }
+
+    return { distanceMeters, durationSeconds };
+  }
+
   const key = getTomTomApiKey();
   const url = new URL(
     `https://api.tomtom.com/routing/1/calculateRoute/${originLat},${originLng}:${destinationLat},${destinationLng}/json`,
@@ -402,6 +573,79 @@ export function calculateDeliveryFeeInr(config: ShopDeliveryConfig, distanceMete
   const chargeableKm = Math.max(distanceKm - config.includedDistanceKm, 0);
   const fee = config.baseFeeInr + chargeableKm * config.extraPerKmInr;
   return Number(fee.toFixed(2));
+}
+
+export async function fetchEligibleShopIdsForCart(
+  adminClient: ReturnType<typeof createClient>,
+  cartRows: DeliveryCartRow[],
+): Promise<string[]> {
+  if (!cartRows.length) {
+    throw new HttpError(400, "No selected cart items found for checkout.");
+  }
+
+  const requiredQuantities = new Map<string, number>();
+  cartRows.forEach((row) => {
+    requiredQuantities.set(row.product_id, (requiredQuantities.get(row.product_id) ?? 0) + row.quantity);
+  });
+
+  try {
+    const { data, error } = await adminClient
+      .from("product_shop_inventory")
+      .select("product_id, shop_id, stock_quantity, is_active, shop:shops(id, name, status, origin_lat, origin_lng)")
+      .in("product_id", Array.from(requiredQuantities.keys()));
+
+    if (error) {
+      throw error;
+    }
+
+    const inventoryRows = (data ?? []) as DeliveryInventoryRow[];
+    const inventoriesByShop = new Map<string, Map<string, DeliveryInventoryRow>>();
+
+    inventoryRows.forEach((row) => {
+      const current = inventoriesByShop.get(row.shop_id) ?? new Map<string, DeliveryInventoryRow>();
+      current.set(row.product_id, row);
+      inventoriesByShop.set(row.shop_id, current);
+    });
+
+    const eligibleShopIds = Array.from(inventoriesByShop.entries())
+      .filter(([, inventoryMap]) =>
+        Array.from(requiredQuantities.entries()).every(([productId, requiredQuantity]) => {
+          const inventory = inventoryMap.get(productId);
+          const shop = Array.isArray(inventory?.shop) ? inventory.shop[0] : inventory?.shop;
+          return Boolean(
+            inventory &&
+            (inventory.is_active ?? true) &&
+            Number(inventory.stock_quantity) >= requiredQuantity &&
+            shop?.status === "active",
+          );
+        })
+      )
+      .map(([shopId]) => shopId);
+
+    if (!eligibleShopIds.length) {
+      throw new HttpError(409, "The selected items are no longer available together in a single shop.");
+    }
+
+    return eligibleShopIds;
+  } catch (issue) {
+    if (!isMissingInventoryTableError(issue)) {
+      throw issue;
+    }
+
+    return [ensureSingleShopCart(cartRows)];
+  }
+}
+
+export async function assertShopCanFulfillCart(
+  adminClient: ReturnType<typeof createClient>,
+  cartRows: DeliveryCartRow[],
+  shopId: string,
+): Promise<void> {
+  const eligibleShopIds = await fetchEligibleShopIdsForCart(adminClient, cartRows);
+
+  if (!eligibleShopIds.includes(shopId)) {
+    throw new HttpError(409, "The selected shop can no longer fulfill all items in your cart.");
+  }
 }
 
 export async function persistDeliveryQuote(
@@ -451,7 +695,7 @@ export async function loadValidatedDeliveryQuote(
   options: {
     deliveryQuoteId: string;
     userId: string;
-    shopId: string;
+    shopId?: string;
     cartSignature: string;
     allowExpired?: boolean;
   },
@@ -475,7 +719,7 @@ export async function loadValidatedDeliveryQuote(
 
   const quote = mapQuoteRow(data as DeliveryQuoteRow);
 
-  if (quote.shopId !== options.shopId) {
+  if (options.shopId && quote.shopId !== options.shopId) {
     throw new HttpError(400, "Delivery quote no longer matches the selected shop.");
   }
 

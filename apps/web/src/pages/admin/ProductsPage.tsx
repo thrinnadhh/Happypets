@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { EmptyState } from "@/components/common/EmptyState";
 import { FloatingActionButton } from "@/components/common/FloatingActionButton";
 import { Loader } from "@/components/common/Loader";
@@ -10,14 +10,16 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useCatalog } from "@/contexts/CatalogContext";
 import { displaySectionLabels, productTagLabels, sortProductsByPosition } from "@/data/catalog";
 import { formatInr } from "@/lib/commerce";
+import { fetchSelectableShopsFromSupabase } from "@/lib/supabase";
 import { adminLinks } from "@/pages/admin/navigation";
-import { Product } from "@/types";
+import { Product, ProductCategory, ShopLocation } from "@/types";
 
 export function AdminProductsPage(): JSX.Element {
   const { user } = useAuth();
   const { products, loading, createProduct, updateProduct, deleteProduct } = useCatalog();
   const [open, setOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [availableShops, setAvailableShops] = useState<ShopLocation[]>([]);
   const discountedCount = products.filter((product) => product.discount).length;
   const lowStockCount = products.filter((product) => product.quantity < 20).length;
   const homeCount = products.filter((product) => product.displaySection === "Home").length;
@@ -30,6 +32,33 @@ export function AdminProductsPage(): JSX.Element {
 
     return left.position - right.position;
   });
+  const existingBrandsByCategory = useMemo(() => {
+    return products.reduce<Record<ProductCategory, string[]>>((accumulator, product) => {
+      const current = accumulator[product.category] ?? [];
+      if (product.brand.trim() && !current.includes(product.brand.trim())) {
+        current.push(product.brand.trim());
+      }
+      accumulator[product.category] = current.sort((left, right) => left.localeCompare(right));
+      return accumulator;
+    }, {
+      Dog: [],
+      Cat: [],
+      Fish: [],
+      Hamster: [],
+      Rabbit: [],
+      Birds: [],
+    });
+  }, [products]);
+
+  useEffect(() => {
+    if (!user?.approved) {
+      return;
+    }
+
+    void fetchSelectableShopsFromSupabase()
+      .then(setAvailableShops)
+      .catch(() => setAvailableShops([]));
+  }, [user?.approved]);
 
   if (loading) {
     return <Loader label="Loading product manager..." />;
@@ -129,6 +158,14 @@ export function AdminProductsPage(): JSX.Element {
                           : "None",
                     },
                     {
+                      key: "shops",
+                      title: "Fulfillment Shops",
+                      render: (product) =>
+                        product.shopInventories?.length
+                          ? product.shopInventories.map((inventory) => `${inventory.shopName} (${inventory.stockQuantity})`).join(", ")
+                          : "Primary shop only",
+                    },
+                    {
                       key: "quantity",
                       title: "Quantity",
                       render: (product) => product.quantity,
@@ -199,6 +236,8 @@ export function AdminProductsPage(): JSX.Element {
       <ProductFormModal
         open={open}
         product={editingProduct}
+        availableShops={availableShops}
+        existingBrandsByCategory={existingBrandsByCategory}
         onClose={() => setOpen(false)}
         onSave={async (input) => {
           if (editingProduct) {

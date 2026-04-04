@@ -22,6 +22,9 @@ import {
   OrderRecord,
   Product,
   ProductCategory,
+  ProductShopInventory,
+  SavedAddress,
+  ShopLocation,
   SignupPayload,
   SignupResult,
   User,
@@ -100,6 +103,23 @@ type SupabaseProductRow = {
   category?: SupabaseCategoryJoin | SupabaseCategoryJoin[];
 };
 
+type SupabaseShopRow = {
+  id: string;
+  name: string;
+  slug: string;
+  status: ShopLocation["status"];
+  origin_lat?: number | string | null;
+  origin_lng?: number | string | null;
+};
+
+type SupabaseProductInventoryRow = {
+  product_id: string;
+  shop_id: string;
+  stock_quantity: number;
+  is_active: boolean | null;
+  shop?: SupabaseShopRow | SupabaseShopRow[] | null;
+};
+
 type SupabaseAdminRequestRow = {
   user_id: string;
   status: "pending" | "approved" | "rejected" | "revoked";
@@ -153,6 +173,22 @@ type SupabaseAdminDeliveryConfigRow = {
   extra_per_km_inr: number | string;
   max_service_distance_km: number | string;
   is_active: boolean | null;
+};
+
+type SupabaseAddressRow = {
+  id: string;
+  label: string | null;
+  full_name: string | null;
+  phone: string | null;
+  address_line1: string;
+  address_line2: string | null;
+  city: string;
+  state: string;
+  pincode: string;
+  latitude?: number | string | null;
+  longitude?: number | string | null;
+  is_default: boolean | null;
+  created_at: string | null;
 };
 
 type SupabaseOrderItemRow = {
@@ -499,6 +535,27 @@ function mapRowToProduct(row: SupabaseProductRow): Product {
   };
 }
 
+function mapRowToShopLocation(row: SupabaseShopRow): ShopLocation {
+  return {
+    id: row.id,
+    name: row.name,
+    slug: row.slug,
+    status: row.status,
+    originLat: row.origin_lat == null ? null : Number(row.origin_lat),
+    originLng: row.origin_lng == null ? null : Number(row.origin_lng),
+  };
+}
+
+function mapInventoryRowToProductShopInventory(row: SupabaseProductInventoryRow): ProductShopInventory {
+  const shop = Array.isArray(row.shop) ? row.shop[0] : row.shop;
+  return {
+    shopId: row.shop_id,
+    shopName: shop?.name ?? "Shop",
+    stockQuantity: Number(row.stock_quantity ?? 0),
+    isActive: row.is_active ?? true,
+  };
+}
+
 function mapRowToBanner(row: SupabaseBannerRow): Banner {
   return {
     id: row.id,
@@ -598,6 +655,36 @@ function mapRowToOrder(row: SupabaseOrderRow): OrderRecord {
   };
 }
 
+function mapRowToSavedAddress(row: SupabaseAddressRow): SavedAddress {
+  const formattedAddress = [
+    row.address_line1,
+    row.address_line2 ?? "",
+    row.city,
+    row.state,
+    row.pincode,
+  ]
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .join(", ");
+
+  return {
+    id: row.id,
+    label: row.label?.trim() || "Saved address",
+    fullName: row.full_name?.trim() || "HappyPets Customer",
+    phone: row.phone?.trim() || "",
+    addressLine1: row.address_line1,
+    addressLine2: row.address_line2 ?? "",
+    city: row.city,
+    state: row.state,
+    pincode: row.pincode,
+    latitude: row.latitude == null ? null : Number(row.latitude),
+    longitude: row.longitude == null ? null : Number(row.longitude),
+    isDefault: row.is_default ?? false,
+    createdAt: row.created_at ?? "",
+    formattedAddress,
+  };
+}
+
 async function getCurrentAuthUser(): Promise<SupabaseAuthUser | null> {
   const client = requireSupabaseClient();
   const {
@@ -692,6 +779,46 @@ function buildProductSlug(name: string): string {
   return `${base || "product"}-${Date.now().toString(36)}`;
 }
 
+function buildShopSlug(name: string): string {
+  const base = name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
+
+  return base || `shop-${Date.now().toString(36)}`;
+}
+
+function normalizeProductShopInventories(
+  inventories: ProductShopInventory[] | undefined,
+  fallbackShopId: string,
+): ProductShopInventory[] {
+  const source =
+    inventories?.length
+      ? inventories
+      : [{ shopId: fallbackShopId, shopName: "", stockQuantity: 0, isActive: true }];
+
+  return source
+    .map((inventory) => ({
+      shopId: inventory.shopId,
+      shopName: inventory.shopName,
+      stockQuantity: Math.max(0, Math.trunc(Number(inventory.stockQuantity) || 0)),
+      isActive: inventory.isActive !== false,
+    }))
+    .filter((inventory, index, collection) =>
+      inventory.shopId &&
+      collection.findIndex((candidate) => candidate.shopId === inventory.shopId) === index
+    );
+}
+
+function calculateInventoryTotal(inventories: ProductShopInventory[] | undefined, fallbackQuantity: number): number {
+  if (!inventories?.length) {
+    return Math.max(0, Math.trunc(Number(fallbackQuantity) || 0));
+  }
+
+  return inventories.reduce((sum, inventory) => sum + Math.max(0, Math.trunc(Number(inventory.stockQuantity) || 0)), 0);
+}
+
 function buildOrderNumber(): string {
   const now = new Date();
   const date = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(
@@ -718,6 +845,20 @@ function validateProductInput(product: Omit<Product, "id" | "soldCount" | "reven
     throw new Error("Packet count must be at least 1.");
   }
 
+  if (!product.shopInventories?.length) {
+    throw new Error("Select at least one fulfillment shop.");
+  }
+
+  product.shopInventories.forEach((inventory) => {
+    if (!inventory.shopId) {
+      throw new Error("Each selected fulfillment shop must be valid.");
+    }
+
+    if (!Number.isFinite(inventory.stockQuantity) || inventory.stockQuantity < 0) {
+      throw new Error("Per-shop stock must be 0 or greater.");
+    }
+  });
+
   if (isManufactureDateInvalid(product.manufactureDate, product.expiryDate)) {
     throw new Error("Manufacture date must be before expiry date.");
   }
@@ -726,6 +867,14 @@ function validateProductInput(product: Omit<Product, "id" | "soldCount" | "reven
 function validateCheckoutInput(checkout: CheckoutDetails): void {
   if (!checkout.address.trim()) {
     throw new Error("Delivery address is required.");
+  }
+
+  if (!checkout.city.trim()) {
+    throw new Error("City is required.");
+  }
+
+  if (!/^\d{6}$/.test(checkout.pincode.trim())) {
+    throw new Error("Pincode must be exactly 6 digits.");
   }
 
   if (!/^\d{10}$/.test(checkout.mobileNumber.trim())) {
@@ -902,6 +1051,24 @@ function isMissingCouponValidityColumnError(issue: unknown): boolean {
   return ["valid_from", "valid_until", "starts_at", "ends_at"].some((column) => message.includes(column));
 }
 
+function isMissingAddressCoordinateColumnError(issue: unknown): boolean {
+  if (!issue || typeof issue !== "object") {
+    return false;
+  }
+
+  const message = "message" in issue && typeof issue.message === "string" ? issue.message.toLowerCase() : "";
+  return ["latitude", "longitude"].some((column) => message.includes(column));
+}
+
+function isMissingProductShopInventoryTableError(issue: unknown): boolean {
+  if (!issue || typeof issue !== "object") {
+    return false;
+  }
+
+  const message = "message" in issue && typeof issue.message === "string" ? issue.message.toLowerCase() : "";
+  return message.includes("product_shop_inventory");
+}
+
 function isPermissionDeniedError(issue: unknown, tableName?: string): boolean {
   if (!issue || typeof issue !== "object") {
     return false;
@@ -943,6 +1110,28 @@ function toDeliveryAdminError(issue: unknown, fallback = "Unable to save deliver
   }
 
   return toError(issue, fallback);
+}
+
+function toShopAdminError(issue: unknown, fallback = "Unable to save shop settings."): Error {
+  if (isPermissionDeniedError(issue, "shops")) {
+    return new Error("Shop permissions are not set up for this account yet.");
+  }
+
+  return toError(issue, fallback);
+}
+
+function validateShopLocationInput(input: Omit<ShopLocation, "id" | "slug">): void {
+  if (!input.name.trim()) {
+    throw new Error("Shop name is required.");
+  }
+
+  if (!Number.isFinite(input.originLat) || (input.originLat ?? 0) < -90 || (input.originLat ?? 0) > 90) {
+    throw new Error("Shop latitude must be between -90 and 90.");
+  }
+
+  if (!Number.isFinite(input.originLng) || (input.originLng ?? 0) < -180 || (input.originLng ?? 0) > 180) {
+    throw new Error("Shop longitude must be between -180 and 180.");
+  }
 }
 
 function resolveImageMimeType(file: Pick<File, "name" | "type">): string | null {
@@ -1126,8 +1315,13 @@ async function fetchProductById(productId: string): Promise<Product> {
     return mapRowToProduct(data as SupabaseProductRow);
   };
 
+  const hydrateSingle = async (product: Product): Promise<Product> => {
+    const [hydrated] = await hydrateProductsWithShopInventories([product]);
+    return hydrated ?? product;
+  };
+
   try {
-    return await attempt(PRODUCT_SELECT);
+    return await hydrateSingle(await attempt(PRODUCT_SELECT));
   } catch (issue) {
     if (!isMissingProductEnhancementColumnError(issue)) {
       throw toError(issue, "Unable to load product.");
@@ -1135,7 +1329,7 @@ async function fetchProductById(productId: string): Promise<Product> {
   }
 
   try {
-    return await attempt(LIFE_STAGE_PRODUCT_SELECT);
+    return await hydrateSingle(await attempt(LIFE_STAGE_PRODUCT_SELECT));
   } catch (issue) {
     if (!isMissingProductEnhancementColumnError(issue)) {
       throw toError(issue, "Unable to load product.");
@@ -1143,14 +1337,71 @@ async function fetchProductById(productId: string): Promise<Product> {
   }
 
   try {
-    return await attempt(ENHANCED_PRODUCT_SELECT);
+    return await hydrateSingle(await attempt(ENHANCED_PRODUCT_SELECT));
   } catch (issue) {
     if (!isMissingProductEnhancementColumnError(issue)) {
       throw toError(issue, "Unable to load product.");
     }
   }
 
-  return attempt(LEGACY_PRODUCT_SELECT);
+  return hydrateSingle(await attempt(LEGACY_PRODUCT_SELECT));
+}
+
+async function fetchProductShopInventories(
+  productIds: string[],
+): Promise<Map<string, ProductShopInventory[]>> {
+  const client = requireSupabaseClient();
+
+  if (!productIds.length) {
+    return new Map();
+  }
+
+  try {
+    const { data, error } = await client
+      .from("product_shop_inventory")
+      .select("product_id, shop_id, stock_quantity, is_active, shop:shops(id, name, slug, status, origin_lat, origin_lng)")
+      .in("product_id", productIds);
+
+    if (error) {
+      throw error;
+    }
+
+    const inventoryMap = new Map<string, ProductShopInventory[]>();
+    ((data ?? []) as SupabaseProductInventoryRow[]).forEach((row) => {
+      const current = inventoryMap.get(row.product_id) ?? [];
+      current.push(mapInventoryRowToProductShopInventory(row));
+      inventoryMap.set(row.product_id, current);
+    });
+
+    return inventoryMap;
+  } catch (issue) {
+    if (!isMissingProductShopInventoryTableError(issue)) {
+      throw issue;
+    }
+
+    return new Map();
+  }
+}
+
+async function hydrateProductsWithShopInventories(products: Product[]): Promise<Product[]> {
+  const inventoryMap = await fetchProductShopInventories(products.map((product) => product.id));
+
+  return products.map((product) => {
+    const shopInventories = inventoryMap.get(product.id) ?? [];
+    if (!shopInventories.length) {
+      return product;
+    }
+
+    const totalQuantity = shopInventories
+      .filter((inventory) => inventory.isActive)
+      .reduce((sum, inventory) => sum + inventory.stockQuantity, 0);
+
+    return {
+      ...product,
+      quantity: totalQuantity,
+      shopInventories,
+    };
+  });
 }
 
 export async function uploadImageToSupabase(
@@ -1360,7 +1611,21 @@ export async function fetchProductsFromSupabase(): Promise<Product[]> {
       throw error;
     }
 
-    return (data ?? []).map((row) => mapRowToProduct(row as SupabaseProductRow));
+    const mapped = (data ?? []).map((row) => mapRowToProduct(row as SupabaseProductRow));
+    const hydrated = await hydrateProductsWithShopInventories(mapped);
+
+    if (!profile || profile.role === "customer") {
+      return hydrated.filter((product) => {
+        const inventories = product.shopInventories ?? [];
+        if (!inventories.length) {
+          return product.quantity > 0;
+        }
+
+        return inventories.some((inventory) => inventory.isActive && inventory.stockQuantity > 0);
+      });
+    }
+
+    return hydrated;
   };
 
   try {
@@ -1406,6 +1671,8 @@ export async function createProductInSupabase(
     resolveCategoryId(product.category),
     getCurrentAdminShopId(profile.id),
   ]);
+  const normalizedInventories = normalizeProductShopInventories(product.shopInventories, shopId);
+  const totalQuantity = calculateInventoryTotal(normalizedInventories, product.quantity);
 
   const legacyPayload = {
     shop_id: shopId,
@@ -1415,7 +1682,7 @@ export async function createProductInSupabase(
     description: product.description,
     price_inr: product.price,
     compare_at_price: null,
-    stock_quantity: product.quantity,
+    stock_quantity: totalQuantity,
     images: buildProductImages(product),
     tags: sortTags(product.tags ?? []),
     brand: product.brand,
@@ -1459,8 +1726,34 @@ export async function createProductInSupabase(
     return data.id as string;
   };
 
+  const saveInventories = async (productId: string): Promise<void> => {
+    try {
+      const { error } = await client
+        .from("product_shop_inventory")
+        .upsert(
+          normalizedInventories.map((inventory) => ({
+            product_id: productId,
+            shop_id: inventory.shopId,
+            stock_quantity: Math.max(0, Math.trunc(inventory.stockQuantity)),
+            is_active: inventory.isActive,
+          })),
+          { onConflict: "product_id,shop_id" },
+        );
+
+      if (error) {
+        throw error;
+      }
+    } catch (issue) {
+      if (!isMissingProductShopInventoryTableError(issue)) {
+        throw toError(issue, "Unable to save product shops.");
+      }
+    }
+  };
+
   try {
-    return fetchProductById(await insertProduct(fullPayload));
+    const productId = await insertProduct(fullPayload);
+    await saveInventories(productId);
+    return fetchProductById(productId);
   } catch (issue) {
     if (!isMissingProductEnhancementColumnError(issue)) {
       throw toError(issue, "Unable to save product.");
@@ -1468,7 +1761,9 @@ export async function createProductInSupabase(
   }
 
   try {
-    return fetchProductById(await insertProduct(lifeStagePayload));
+    const productId = await insertProduct(lifeStagePayload);
+    await saveInventories(productId);
+    return fetchProductById(productId);
   } catch (issue) {
     if (!isMissingProductEnhancementColumnError(issue)) {
       throw toError(issue, "Unable to save product.");
@@ -1476,14 +1771,18 @@ export async function createProductInSupabase(
   }
 
   try {
-    return fetchProductById(await insertProduct(enhancedPayload));
+    const productId = await insertProduct(enhancedPayload);
+    await saveInventories(productId);
+    return fetchProductById(productId);
   } catch (issue) {
     if (!isMissingProductEnhancementColumnError(issue)) {
       throw toError(issue, "Unable to save product.");
     }
   }
 
-  return fetchProductById(await insertProduct(legacyPayload));
+  const productId = await insertProduct(legacyPayload);
+  await saveInventories(productId);
+  return fetchProductById(productId);
 }
 
 export async function updateProductInSupabase(
@@ -1500,13 +1799,16 @@ export async function updateProductInSupabase(
   validateProductInput(product);
 
   const categoryId = await resolveCategoryId(product.category);
+  const profileShopId = await getCurrentAdminShopId(profile.id);
+  const normalizedInventories = normalizeProductShopInventories(product.shopInventories, profileShopId);
+  const totalQuantity = calculateInventoryTotal(normalizedInventories, product.quantity);
 
   const legacyPayload = {
     category_id: categoryId,
     name: product.name,
     description: product.description,
     price_inr: product.price,
-    stock_quantity: product.quantity,
+    stock_quantity: totalQuantity,
     images: buildProductImages(product),
     tags: sortTags(product.tags ?? []),
     brand: product.brand,
@@ -1545,6 +1847,39 @@ export async function updateProductInSupabase(
     }
   };
 
+  const saveInventories = async (): Promise<void> => {
+    try {
+      const { error: deleteError } = await client
+        .from("product_shop_inventory")
+        .delete()
+        .eq("product_id", productId);
+
+      if (deleteError) {
+        throw deleteError;
+      }
+
+      const { error } = await client
+        .from("product_shop_inventory")
+        .upsert(
+          normalizedInventories.map((inventory) => ({
+            product_id: productId,
+            shop_id: inventory.shopId,
+            stock_quantity: Math.max(0, Math.trunc(inventory.stockQuantity)),
+            is_active: inventory.isActive,
+          })),
+          { onConflict: "product_id,shop_id" },
+        );
+
+      if (error) {
+        throw error;
+      }
+    } catch (issue) {
+      if (!isMissingProductShopInventoryTableError(issue)) {
+        throw toError(issue, "Unable to save product shops.");
+      }
+    }
+  };
+
   try {
     await updateProduct(fullPayload);
   } catch (issue) {
@@ -1570,6 +1905,7 @@ export async function updateProductInSupabase(
   }
 
   await updateProduct(legacyPayload);
+  await saveInventories();
 
   return fetchProductById(productId);
 }
@@ -2153,6 +2489,44 @@ export async function searchDeliveryAddressesInSupabase(query: string): Promise<
   return data?.suggestions ?? [];
 }
 
+export async function fetchSavedAddressesFromSupabase(): Promise<SavedAddress[]> {
+  const client = requireSupabaseClient();
+  const authUser = await getCurrentAuthUser();
+
+  if (!authUser) {
+    return [];
+  }
+
+  const fetchRows = async (selectClause: string) => {
+    const { data, error } = await client
+      .from("addresses")
+      .select(selectClause)
+      .order("is_default", { ascending: false })
+      .order("created_at", { ascending: false })
+      .limit(6);
+
+    if (error) {
+      throw error;
+    }
+
+    return (data ?? []) as SupabaseAddressRow[];
+  };
+
+  try {
+    return (await fetchRows(
+      "id, label, full_name, phone, address_line1, address_line2, city, state, pincode, latitude, longitude, is_default, created_at",
+    )).map(mapRowToSavedAddress);
+  } catch (issue) {
+    if (!isMissingAddressCoordinateColumnError(issue)) {
+      throw issue;
+    }
+
+    return (await fetchRows(
+      "id, label, full_name, phone, address_line1, address_line2, city, state, pincode, is_default, created_at",
+    )).map(mapRowToSavedAddress);
+  }
+}
+
 export async function quoteDeliveryInSupabase(input: {
   address: string;
   destinationLat?: number;
@@ -2557,6 +2931,178 @@ export async function fetchOrdersFromSupabase(): Promise<OrderRecord[]> {
   }
 
   return (data ?? []).map((row) => mapRowToOrder(row as SupabaseOrderRow));
+}
+
+export async function fetchShopLocationsFromSupabase(): Promise<ShopLocation[]> {
+  const client = requireSupabaseClient();
+  const profile = await getCurrentProfileRow();
+
+  if (!profile || profile.role !== "superadmin") {
+    throw new Error("Only super admins can manage shops.");
+  }
+
+  const { data, error } = await client
+    .from("shops")
+    .select("id, name, slug, status, origin_lat, origin_lng")
+    .order("created_at");
+
+  if (error) {
+    throw toShopAdminError(error, "Unable to load shops.");
+  }
+
+  return ((data ?? []) as SupabaseShopRow[]).map(mapRowToShopLocation);
+}
+
+export async function fetchSelectableShopsFromSupabase(): Promise<ShopLocation[]> {
+  const client = requireSupabaseClient();
+  const profile = await getCurrentProfileRow();
+
+  if (!profile || (profile.role !== "admin" && profile.role !== "superadmin")) {
+    throw new Error("Only admins can load shop selections.");
+  }
+
+  let query = client
+    .from("shops")
+    .select("id, name, slug, status, origin_lat, origin_lng")
+    .order("name");
+
+  if (profile.role === "admin") {
+    query = query.eq("status", "active");
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    throw toShopAdminError(error, "Unable to load shops.");
+  }
+
+  return ((data ?? []) as SupabaseShopRow[]).map(mapRowToShopLocation);
+}
+
+export async function createShopLocationInSupabase(
+  input: Omit<ShopLocation, "id" | "slug">,
+): Promise<ShopLocation> {
+  const client = requireSupabaseClient();
+  const profile = await getCurrentProfileRow();
+
+  if (!profile || profile.role !== "superadmin") {
+    throw new Error("Only super admins can create shops.");
+  }
+
+  validateShopLocationInput(input);
+
+  const baseSlug = buildShopSlug(input.name);
+  const shopPayload = {
+    admin_id: null,
+    name: input.name.trim(),
+    slug: `${baseSlug}-${Date.now().toString(36)}`,
+    status: input.status,
+    origin_lat: input.originLat,
+    origin_lng: input.originLng,
+  };
+
+  const { data, error } = await client
+    .from("shops")
+    .insert(shopPayload)
+    .select("id, name, slug, status, origin_lat, origin_lng")
+    .single();
+
+  if (error) {
+    throw toShopAdminError(error);
+  }
+
+  const shop = mapRowToShopLocation(data as SupabaseShopRow);
+
+  const { error: configError } = await client.from("shop_delivery_configs").upsert(
+    {
+      shop_id: shop.id,
+      origin_address: input.name.trim(),
+      origin_lat: input.originLat,
+      origin_lng: input.originLng,
+      base_fee_inr: 0,
+      included_distance_km: 0,
+      extra_per_km_inr: 0,
+      max_service_distance_km: 15,
+      is_active: input.status === "active",
+    },
+    { onConflict: "shop_id" },
+  );
+
+  if (configError) {
+    throw toDeliveryAdminError(configError);
+  }
+
+  return shop;
+}
+
+export async function updateShopLocationInSupabase(
+  shopId: string,
+  input: Omit<ShopLocation, "id" | "slug">,
+): Promise<ShopLocation> {
+  const client = requireSupabaseClient();
+  const profile = await getCurrentProfileRow();
+
+  if (!profile || profile.role !== "superadmin") {
+    throw new Error("Only super admins can update shops.");
+  }
+
+  validateShopLocationInput(input);
+
+  const { data, error } = await client
+    .from("shops")
+    .update({
+      name: input.name.trim(),
+      status: input.status,
+      origin_lat: input.originLat,
+      origin_lng: input.originLng,
+    })
+    .eq("id", shopId)
+    .select("id, name, slug, status, origin_lat, origin_lng")
+    .single();
+
+  if (error) {
+    throw toShopAdminError(error);
+  }
+
+  const { data: existingConfig } = await client
+    .from("shop_delivery_configs")
+    .select("shop_id")
+    .eq("shop_id", shopId)
+    .maybeSingle();
+
+  if (existingConfig?.shop_id) {
+    const { error: updateConfigError } = await client
+      .from("shop_delivery_configs")
+      .update({
+        origin_address: input.name.trim(),
+        origin_lat: input.originLat,
+        origin_lng: input.originLng,
+        is_active: input.status === "active",
+      })
+      .eq("shop_id", shopId);
+
+    if (updateConfigError) {
+      throw toDeliveryAdminError(updateConfigError);
+    }
+  } else {
+    const { error: insertConfigError } = await client.from("shop_delivery_configs").insert({
+      shop_id: shopId,
+      origin_address: input.name.trim(),
+      origin_lat: input.originLat,
+      origin_lng: input.originLng,
+      base_fee_inr: 0,
+      included_distance_km: 0,
+      extra_per_km_inr: 0,
+      max_service_distance_km: 15,
+      is_active: input.status === "active",
+    });
+
+    if (insertConfigError) {
+      throw toDeliveryAdminError(insertConfigError);
+    }
+  }
+
+  return mapRowToShopLocation(data as SupabaseShopRow);
 }
 
 export async function fetchAdminsFromSupabase(): Promise<AdminRecord[]> {

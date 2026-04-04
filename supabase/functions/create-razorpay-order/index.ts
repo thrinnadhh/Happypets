@@ -9,9 +9,9 @@ import {
 } from "../_shared/cors.ts";
 import { enforceRateLimit } from "../_shared/rate-limit.ts";
 import {
+  assertShopCanFulfillCart,
   buildCartSignature,
   calculateCartSubtotal,
-  ensureSingleShopCart,
   fetchSelectedCartRows,
   loadValidatedDeliveryQuote,
 } from "../_shared/delivery.ts";
@@ -173,16 +173,15 @@ serve(async (request) => {
     });
 
     const cartRows = await fetchSelectedCartRows(adminClient, user.id);
-    const shopId = ensureSingleShopCart(cartRows);
     const cartSignature = buildCartSignature(cartRows);
     const subtotal = calculateCartSubtotal(cartRows);
     const coupon = await resolveCoupon(adminClient, couponCode, subtotal);
     const deliveryQuote = await loadValidatedDeliveryQuote(adminClient, {
       deliveryQuoteId,
       userId: user.id,
-      shopId,
       cartSignature,
     });
+    await assertShopCanFulfillCart(adminClient, cartRows, deliveryQuote.shopId);
 
     const total = Math.max(subtotal - (coupon?.discountAmount ?? 0) + deliveryQuote.deliveryFeeInr, 0);
     const amountPaise = Math.round(total * 100);
@@ -200,7 +199,7 @@ serve(async (request) => {
         receipt: `hpt-${Date.now()}`,
         notes: {
           user_id: user.id,
-          shop_id: shopId,
+          shop_id: deliveryQuote.shopId,
           coupon_code: coupon?.code ?? "",
           delivery_quote_id: deliveryQuote.id,
           delivery_fee_inr: String(deliveryQuote.deliveryFeeInr),

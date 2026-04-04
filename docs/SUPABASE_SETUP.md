@@ -29,6 +29,7 @@ Apply these Supabase SQL files in order:
 14. `supabase/migrations/014_coupons_admin_manage.sql`
 15. `supabase/migrations/015_security_hardening.sql`
 16. `supabase/migrations/016_delivery_pricing_tomtom.sql`
+17. `supabase/migrations/017_address_coordinates.sql`
 
 ## Promote the first superadmin
 
@@ -64,6 +65,7 @@ Make sure the following function secrets are available in Supabase:
 - `RAZORPAY_KEY_SECRET`
 - `RAZORPAY_WEBHOOK_SECRET`
 - `TOMTOM_API_KEY`
+- `LOCATIONIQ_API_KEY` (optional alternative provider)
 
 ## Browser-side TomTom map pinning
 
@@ -73,12 +75,16 @@ To enable that UI in the Vite app, add one of these repo-root variables to `.env
 
 - `VITE_TOMTOM_API_KEY`
 - `NEXT_PUBLIC_TOMTOM_API_KEY`
+- `VITE_LOCATIONIQ_API_KEY`
+- `NEXT_PUBLIC_LOCATIONIQ_API_KEY`
 
 This browser-visible key is used only for:
 
-- rendering TomTom map tiles
 - reverse geocoding a clicked or dragged pin into a readable address
+
+The visible map tiles now render independently in the browser, so this key is only needed when you want a clicked pin to auto-fill a readable address, city, and pincode.
 
 The server-side delivery quote and route pricing still use the Supabase Edge Function secret:
 
 - `TOMTOM_API_KEY`
+- `LOCATIONIQ_API_KEY` (if you want LocationIQ to be preferred instead)

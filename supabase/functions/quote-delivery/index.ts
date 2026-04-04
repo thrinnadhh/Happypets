@@ -12,7 +12,7 @@ import {
   buildCartSignature,
   calculateDeliveryFeeInr,
   calculateRouteWithTomTom,
-  ensureSingleShopCart,
+  fetchEligibleShopIdsForCart,
   fetchSelectedCartRows,
   fetchShopDeliveryConfig,
   geocodeAddressWithTomTom,
@@ -95,44 +95,78 @@ serve(async (request) => {
     });
 
     const cartRows = await fetchSelectedCartRows(adminClient, user.id);
-    const shopId = ensureSingleShopCart(cartRows);
     const cartSignature = buildCartSignature(cartRows);
-    const config = await fetchShopDeliveryConfig(adminClient, shopId);
     const destination =
       destinationLat !== null && destinationLng !== null
         ? {
             id: `${destinationLat},${destinationLng}`,
             address,
             secondaryText: "",
+            city: "",
+            pincode: "",
             latitude: destinationLat,
             longitude: destinationLng,
           }
         : await geocodeAddressWithTomTom(address);
-    const route = await calculateRouteWithTomTom(
-      config.originLat,
-      config.originLng,
-      destination.latitude,
-      destination.longitude,
-    );
+    const eligibleShopIds = await fetchEligibleShopIdsForCart(adminClient, cartRows);
+    let selectedQuote:
+      | {
+          shopId: string;
+          route: { distanceMeters: number; durationSeconds: number };
+          deliveryFeeInr: number;
+        }
+      | null = null;
 
-    if (route.distanceMeters > config.maxServiceDistanceKm * 1000) {
-      throw new HttpError(
-        400,
-        `This address is outside the shop's ${config.maxServiceDistanceKm.toFixed(0)} km delivery area.`,
-      );
+    for (const shopId of eligibleShopIds) {
+      try {
+        const config = await fetchShopDeliveryConfig(adminClient, shopId);
+        const route = await calculateRouteWithTomTom(
+          config.originLat,
+          config.originLng,
+          destination.latitude,
+          destination.longitude,
+        );
+
+        if (route.distanceMeters > config.maxServiceDistanceKm * 1000) {
+          continue;
+        }
+
+        const deliveryFeeInr = calculateDeliveryFeeInr(config, route.distanceMeters);
+        if (
+          !selectedQuote ||
+          route.distanceMeters < selectedQuote.route.distanceMeters ||
+          (route.distanceMeters === selectedQuote.route.distanceMeters &&
+            route.durationSeconds < selectedQuote.route.durationSeconds)
+        ) {
+          selectedQuote = {
+            shopId,
+            route,
+            deliveryFeeInr,
+          };
+        }
+      } catch (issue) {
+        if (issue instanceof HttpError && issue.status < 500) {
+          continue;
+        }
+
+        throw issue;
+      }
     }
 
-    const deliveryFeeInr = calculateDeliveryFeeInr(config, route.distanceMeters);
+    if (!selectedQuote) {
+      throw new HttpError(400, "No nearby shop can deliver all selected items to this address right now.");
+    }
+
     const quote = await persistDeliveryQuote(adminClient, {
       userId: user.id,
-      shopId,
+      shopId: selectedQuote.shopId,
       cartSignature,
       destinationAddress: destination.address,
       destinationLat: destination.latitude,
       destinationLng: destination.longitude,
-      distanceMeters: route.distanceMeters,
-      durationSeconds: route.durationSeconds,
-      deliveryFeeInr,
+      distanceMeters: selectedQuote.route.distanceMeters,
+      durationSeconds: selectedQuote.route.durationSeconds,
+      deliveryFeeInr: selectedQuote.deliveryFeeInr,
     });
 
     return withCors(request, jsonResponse({

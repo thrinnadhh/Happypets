@@ -10,10 +10,10 @@ import {
 } from "../_shared/cors.ts";
 import { enforceRateLimit } from "../_shared/rate-limit.ts";
 import {
+  assertShopCanFulfillCart,
   buildCartSignature,
   calculateCartSubtotal,
   calculateDiscountedPrice,
-  ensureSingleShopCart,
   fetchSelectedCartRows,
   getCartProduct,
   loadValidatedDeliveryQuote,
@@ -21,6 +21,8 @@ import {
 
 type CheckoutPayload = {
   address: string;
+  city: string;
+  pincode: string;
   mobileNumber: string;
   deliveryTime: string;
   deliveryQuoteId: string;
@@ -68,6 +70,15 @@ function isMissingProductEnhancementColumnError(issue: unknown): boolean {
   return message.includes("is_sample");
 }
 
+function isMissingAddressCoordinateColumnError(issue: unknown): boolean {
+  if (!issue || typeof issue !== "object") {
+    return false;
+  }
+
+  const message = "message" in issue && typeof issue.message === "string" ? issue.message.toLowerCase() : "";
+  return message.includes("latitude") || message.includes("longitude");
+}
+
 function buildOrderNumber(): string {
   const now = new Date();
   const date = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(
@@ -80,6 +91,14 @@ function buildOrderNumber(): string {
 function validateCheckoutPayload(checkout: CheckoutPayload): void {
   if (!checkout.address.trim()) {
     throw new HttpError(400, "Delivery address is required.");
+  }
+
+  if (!checkout.city.trim()) {
+    throw new HttpError(400, "City is required.");
+  }
+
+  if (!/^\d{6}$/.test(checkout.pincode.trim())) {
+    throw new HttpError(400, "Pincode must be exactly 6 digits.");
   }
 
   if (!/^\d{10}$/.test(checkout.mobileNumber.trim())) {
@@ -392,7 +411,6 @@ serve(async (request) => {
     }
 
     const cartRows = await fetchSelectedCartRows(adminClient, user.id);
-    const shopId = ensureSingleShopCart(cartRows);
     const cartSignature = buildCartSignature(cartRows);
     const subtotal = calculateCartSubtotal(cartRows);
     const coupon = await resolveCoupon(adminClient, couponCode, subtotal);
@@ -400,10 +418,10 @@ serve(async (request) => {
     const deliveryQuote = await loadValidatedDeliveryQuote(adminClient, {
       deliveryQuoteId: checkout.deliveryQuoteId,
       userId: user.id,
-      shopId,
       cartSignature,
       allowExpired: true,
     });
+    await assertShopCanFulfillCart(adminClient, cartRows, deliveryQuote.shopId);
     const total = Math.max(subtotal - discountAmount + deliveryQuote.deliveryFeeInr, 0);
     const expectedAmountPaise = Math.round(total * 100);
 
@@ -417,28 +435,66 @@ serve(async (request) => {
       .eq("id", user.id)
       .maybeSingle();
 
-    const { data: address, error: addressError } = await adminClient
-      .from("addresses")
-      .insert({
+    const insertAddress = async (includeCoordinates: boolean) => {
+      const payload: Record<string, unknown> = {
         user_id: user.id,
         label: "Delivery",
         full_name: profile?.full_name ?? "HappyPets Customer",
         phone: checkout.mobileNumber,
         address_line1: deliveryQuote.destinationAddress,
-        city: "NA",
+        city: checkout.city.trim(),
         state: "NA",
-        pincode: "000000",
+        pincode: checkout.pincode.trim(),
         is_default: false,
-      })
-      .select("id")
-      .single();
+      };
 
-    if (addressError) {
-      throw addressError;
+      if (includeCoordinates) {
+        payload.latitude = checkout.destinationLat;
+        payload.longitude = checkout.destinationLng;
+      }
+
+      return adminClient
+        .from("addresses")
+        .insert(payload)
+        .select("id")
+        .single();
+    };
+
+    let addressResult = await insertAddress(true);
+    if (addressResult.error && isMissingAddressCoordinateColumnError(addressResult.error)) {
+      addressResult = await insertAddress(false);
     }
+
+    if (addressResult.error) {
+      throw addressResult.error;
+    }
+
+    const address = addressResult.data;
 
     const paymentMethod =
       ["upi", "card", "netbanking", "wallet"].includes(payment.method ?? "") ? payment.method : "card";
+
+    const soldDeltas = new Map<string, { soldCount: number; revenue: number }>();
+    cartRows.forEach((row) => {
+      const product = getCartProduct(row);
+      const current = soldDeltas.get(row.product_id) ?? { soldCount: 0, revenue: 0 };
+      const unitPrice = calculateDiscountedPrice(Number(product?.price_inr ?? 0), product?.discount);
+      current.soldCount += row.quantity;
+      current.revenue += unitPrice * row.quantity;
+      soldDeltas.set(row.product_id, current);
+    });
+
+    for (const [productId, delta] of soldDeltas.entries()) {
+      const { error: stockError } = await adminClient.rpc("decrement_product_shop_stock", {
+        p_product_id: productId,
+        p_shop_id: deliveryQuote.shopId,
+        p_quantity: delta.soldCount,
+      });
+
+      if (stockError) {
+        throw new HttpError(409, "One of the items just went out of stock before checkout finished.");
+      }
+    }
 
     const { data: order, error: orderError } = await adminClient
       .from("orders")
@@ -490,7 +546,7 @@ serve(async (request) => {
       return {
         order_id: order.id,
         product_id: row.product_id,
-        shop_id: product?.shop_id ?? "",
+        shop_id: deliveryQuote.shopId,
         variant_id: null,
         product_name: product?.name ?? "HappyPets Product",
         variant_name: null,
@@ -506,16 +562,6 @@ serve(async (request) => {
     if (orderItemsError) {
       throw orderItemsError;
     }
-
-    const soldDeltas = new Map<string, { soldCount: number; revenue: number }>();
-    cartRows.forEach((row) => {
-      const product = getCartProduct(row);
-      const current = soldDeltas.get(row.product_id) ?? { soldCount: 0, revenue: 0 };
-      const unitPrice = calculateDiscountedPrice(Number(product?.price_inr ?? 0), product?.discount);
-      current.soldCount += row.quantity;
-      current.revenue += unitPrice * row.quantity;
-      soldDeltas.set(row.product_id, current);
-    });
 
     for (const [productId, delta] of soldDeltas.entries()) {
       const { data: existingProduct } = await adminClient

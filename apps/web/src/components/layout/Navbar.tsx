@@ -16,7 +16,7 @@ const links = [
 ];
 
 export function Navbar(): JSX.Element {
-  const { logout, user } = useAuth();
+  const { user } = useAuth();
   const { favorites } = useFavorites();
   const { itemCount } = useCart();
   const navigate = useNavigate();
@@ -98,15 +98,6 @@ export function Navbar(): JSX.Element {
                 <p className="text-sm font-semibold text-ink">{user?.name}</p>
                 <p className="text-xs text-slate-500">{user?.email}</p>
               </div>
-              <button
-                onClick={() => {
-                  logout();
-                  navigate("/login");
-                }}
-                className="soft-button"
-              >
-                Logout
-              </button>
             </div>
           </div>
         </div>

@@ -14,6 +14,22 @@ export type User = {
   approved: boolean;
 };
 
+export type ShopLocation = {
+  id: string;
+  name: string;
+  slug: string;
+  originLat: number | null;
+  originLng: number | null;
+  status: "pending" | "active" | "suspended";
+};
+
+export type ProductShopInventory = {
+  shopId: string;
+  shopName: string;
+  stockQuantity: number;
+  isActive: boolean;
+};
+
 export type Product = {
   id: string;
   shopId?: string;
@@ -39,6 +55,7 @@ export type Product = {
   soldCount: number;
   revenue: number;
   rating: number;
+  shopInventories?: ProductShopInventory[];
 };
 
 export type Banner = {
@@ -94,6 +111,8 @@ export type DeliveryAddressSuggestion = {
   id: string;
   address: string;
   secondaryText: string;
+  city: string;
+  pincode: string;
   latitude: number;
   longitude: number;
 };
@@ -109,6 +128,23 @@ export type DeliveryQuote = {
   deliveryFeeInr: number;
   serviceable: boolean;
   expiresAt: string;
+};
+
+export type SavedAddress = {
+  id: string;
+  label: string;
+  fullName: string;
+  phone: string;
+  addressLine1: string;
+  addressLine2: string;
+  city: string;
+  state: string;
+  pincode: string;
+  latitude: number | null;
+  longitude: number | null;
+  isDefault: boolean;
+  createdAt: string;
+  formattedAddress: string;
 };
 
 export type AdminDeliveryConfig = {
@@ -140,6 +176,8 @@ export type AdminCoupon = {
 
 export type CheckoutDetails = {
   address: string;
+  city: string;
+  pincode: string;
   mobileNumber: string;
   deliveryTime: string;
   deliveryQuoteId: string;

@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import L, { DragEndEvent } from "leaflet";
 import { MapContainer, Marker, TileLayer, useMap, useMapEvents } from "react-leaflet";
-import { LatLng, getDefaultIndiaCenter, getTomTomRasterTileUrl } from "@/lib/tomtom";
+import { LatLng, getDefaultIndiaCenter, getDisplayMapTileConfig } from "@/lib/tomtom";
 
 type PinLocationMapProps = {
   center?: LatLng | null;
@@ -42,10 +42,10 @@ export function PinLocationMap({
   onPick,
 }: PinLocationMapProps): JSX.Element {
   const fallbackCenter = center ?? marker ?? getDefaultIndiaCenter();
-  const tileUrl = useMemo(() => getTomTomRasterTileUrl(), []);
+  const tileConfig = useMemo(() => getDisplayMapTileConfig(), []);
 
   return (
-    <div className={`overflow-hidden rounded-[28px] border border-[#eadfce] shadow-soft ${heightClassName}`}>
+    <div className={`overflow-hidden rounded-[28px] border border-[#eadfce] bg-[#f4efe6] shadow-soft ${heightClassName}`}>
       <MapContainer
         center={[fallbackCenter.lat, fallbackCenter.lng]}
         zoom={zoom}
@@ -53,9 +53,9 @@ export function PinLocationMap({
         className="h-full w-full"
       >
         <TileLayer
-          attribution='&copy; <a href="https://www.tomtom.com/">TomTom</a>'
-          url={tileUrl}
-          subdomains={["a", "b", "c", "d"]}
+          attribution={tileConfig.attribution}
+          url={tileConfig.url}
+          subdomains={tileConfig.subdomains}
         />
         <RecenterMap center={fallbackCenter} zoom={zoom} />
         <MapClickCapture onPick={onPick} />

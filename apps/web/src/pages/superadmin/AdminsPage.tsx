@@ -2,12 +2,7 @@ import { PageTransition } from "@/components/common/PageTransition";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { DataTable } from "@/components/tables/DataTable";
 import { usePlatform } from "@/contexts/PlatformContext";
-
-const links = [
-  { to: "/superadmin/dashboard", label: "Dashboard" },
-  { to: "/superadmin/admins", label: "Admin Management" },
-  { to: "/superadmin/analytics", label: "Analytics" },
-];
+import { superAdminLinks } from "@/pages/superadmin/navigation";
 
 export function SuperAdminAdminsPage(): JSX.Element {
   const { admins, approveAdmin, revokeAdmin } = usePlatform();
@@ -15,7 +10,7 @@ export function SuperAdminAdminsPage(): JSX.Element {
   return (
     <PageTransition className="min-h-screen bg-soft-grid">
       <main className="mx-auto grid max-w-7xl gap-6 px-4 py-8 md:px-6 xl:grid-cols-[300px_1fr]">
-        <Sidebar title="Admin Management" subtitle="Super Admin" links={links} />
+        <Sidebar title="Admin Management" subtitle="Super Admin" links={superAdminLinks} />
 
         <div className="space-y-6">
           <section className="card p-8">

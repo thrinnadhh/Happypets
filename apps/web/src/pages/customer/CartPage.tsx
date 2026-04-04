@@ -8,9 +8,16 @@ import { PageTransition } from "@/components/common/PageTransition";
 import { Navbar } from "@/components/layout/Navbar";
 import { useCart } from "@/contexts/CartContext";
 import { calculateDiscountedPrice, formatInr, isProductExpired } from "@/lib/commerce";
-import { quoteDeliveryInSupabase, searchDeliveryAddressesInSupabase } from "@/lib/supabase";
-import { LatLng, getDefaultIndiaCenter, hasTomTomPublicKey, reverseGeocodeTomTom } from "@/lib/tomtom";
-import { DeliveryAddressSuggestion, DeliveryQuote } from "@/types";
+import { fetchSavedAddressesFromSupabase, quoteDeliveryInSupabase, searchDeliveryAddressesInSupabase } from "@/lib/supabase";
+import {
+  LatLng,
+  buildLocationQuery,
+  extractStructuredLocation,
+  getDefaultIndiaCenter,
+  hasTomTomPublicKey,
+  reverseGeocodeTomTom,
+} from "@/lib/tomtom";
+import { DeliveryAddressSuggestion, DeliveryQuote, SavedAddress } from "@/types";
 
 function mapCheckoutIssue(issue: unknown): { error: string; notice: string } {
   const message = issue instanceof Error ? issue.message : "Unable to complete payment.";
@@ -49,11 +56,25 @@ function formatDuration(durationSeconds: number): string {
   return minutes ? `${hours}h ${minutes}m` : `${hours}h`;
 }
 
-function validateCheckoutFields(address: string, mobileNumber: string, deliveryTime: string): Partial<Record<"address" | "mobileNumber" | "deliveryTime", string>> {
-  const errors: Partial<Record<"address" | "mobileNumber" | "deliveryTime", string>> = {};
+function validateCheckoutFields(
+  address: string,
+  city: string,
+  pincode: string,
+  mobileNumber: string,
+  deliveryTime: string,
+): Partial<Record<"address" | "city" | "pincode" | "mobileNumber" | "deliveryTime", string>> {
+  const errors: Partial<Record<"address" | "city" | "pincode" | "mobileNumber" | "deliveryTime", string>> = {};
 
   if (!address.trim()) {
     errors.address = "Delivery address is required.";
+  }
+
+  if (!city.trim()) {
+    errors.city = "City is required.";
+  }
+
+  if (!/^\d{6}$/.test(pincode.trim())) {
+    errors.pincode = "Pincode must be exactly 6 digits.";
   }
 
   if (!/^\d{10}$/.test(mobileNumber.trim())) {
@@ -87,6 +108,10 @@ export function CartPage(): JSX.Element {
   } = useCart();
   const [couponCode, setCouponCode] = useState("");
   const [addressQuery, setAddressQuery] = useState("");
+  const [city, setCity] = useState("");
+  const [pincode, setPincode] = useState("");
+  const [savedAddresses, setSavedAddresses] = useState<SavedAddress[]>([]);
+  const [savedAddressesError, setSavedAddressesError] = useState("");
   const [addressSuggestions, setAddressSuggestions] = useState<DeliveryAddressSuggestion[]>([]);
   const [selectedAddress, setSelectedAddress] = useState<DeliveryAddressSuggestion | null>(null);
   const [searchingAddresses, setSearchingAddresses] = useState(false);
@@ -96,6 +121,7 @@ export function CartPage(): JSX.Element {
   const [quotingDelivery, setQuotingDelivery] = useState(false);
   const [mapError, setMapError] = useState("");
   const [resolvingMapPin, setResolvingMapPin] = useState(false);
+  const [locatingCurrentPosition, setLocatingCurrentPosition] = useState(false);
   const [mobileNumber, setMobileNumber] = useState("");
   const [deliveryTime, setDeliveryTime] = useState("");
   const [couponError, setCouponError] = useState("");
@@ -129,8 +155,17 @@ export function CartPage(): JSX.Element {
         .join("|"),
     [items],
   );
-  const checkoutAddress = deliveryQuote?.normalizedAddress ?? selectedAddress?.address ?? addressQuery;
-  const checkoutFieldErrors = validateCheckoutFields(checkoutAddress, mobileNumber, deliveryTime);
+  const structuredQuery = useMemo(
+    () =>
+      buildLocationQuery({
+        addressLine: selectedAddress?.address ?? addressQuery,
+        city: selectedAddress?.city ?? city,
+        pincode: selectedAddress?.pincode ?? pincode,
+      }),
+    [addressQuery, city, pincode, selectedAddress],
+  );
+  const checkoutAddress = deliveryQuote?.normalizedAddress ?? structuredQuery;
+  const checkoutFieldErrors = validateCheckoutFields(checkoutAddress, city, pincode, mobileNumber, deliveryTime);
   const invalidSelectedItems = items.filter((item) => {
     if (!item.selected) {
       return false;
@@ -167,9 +202,42 @@ export function CartPage(): JSX.Element {
     Boolean(deliveryQuote);
 
   useEffect(() => {
-    const normalizedQuery = addressQuery.trim();
+    let cancelled = false;
 
-    if (!normalizedQuery || normalizedQuery.length < 5 || selectedAddress?.address === normalizedQuery || hasMultiShopSelection) {
+    const loadSavedAddresses = async (): Promise<void> => {
+      try {
+        const nextAddresses = await fetchSavedAddressesFromSupabase();
+        if (!cancelled) {
+          setSavedAddresses(nextAddresses);
+          setSavedAddressesError("");
+        }
+      } catch (issue) {
+        if (!cancelled) {
+          setSavedAddresses([]);
+          setSavedAddressesError(issue instanceof Error ? issue.message : "Unable to load saved addresses.");
+        }
+      }
+    };
+
+    void loadSavedAddresses();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const normalizedQuery = structuredQuery.trim();
+    const isSelectedAddress =
+      Boolean(selectedAddress) &&
+      normalizedQuery ===
+        buildLocationQuery({
+          addressLine: selectedAddress?.address ?? "",
+          city: selectedAddress?.city ?? "",
+          pincode: selectedAddress?.pincode ?? "",
+        });
+
+    if (!normalizedQuery || normalizedQuery.length < 5 || isSelectedAddress || hasMultiShopSelection) {
       setAddressSuggestions([]);
       setSearchingAddresses(false);
       return;
@@ -200,7 +268,7 @@ export function CartPage(): JSX.Element {
       cancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [addressQuery, hasMultiShopSelection, selectedAddress?.address]);
+  }, [hasMultiShopSelection, selectedAddress, structuredQuery]);
 
   useEffect(() => {
     if (deliveryQuote) {
@@ -219,14 +287,116 @@ export function CartPage(): JSX.Element {
     setMapError("");
   };
 
+  const handleCityInputChange = (value: string): void => {
+    setCity(value);
+    setSelectedAddress(null);
+    setAddressSuggestions([]);
+    setDeliveryQuote(null);
+    setAddressSearchError("");
+    setDeliveryQuoteError("");
+    setMapError("");
+  };
+
+  const handlePincodeInputChange = (value: string): void => {
+    setPincode(value.replace(/\D/g, "").slice(0, 6));
+    setSelectedAddress(null);
+    setAddressSuggestions([]);
+    setDeliveryQuote(null);
+    setAddressSearchError("");
+    setDeliveryQuoteError("");
+    setMapError("");
+  };
+
   const handleSelectAddress = (suggestion: DeliveryAddressSuggestion): void => {
     setSelectedAddress(suggestion);
     setAddressQuery(suggestion.address);
+    setCity(suggestion.city);
+    setPincode(suggestion.pincode);
     setAddressSuggestions([]);
     setAddressSearchError("");
     setDeliveryQuote(null);
     setDeliveryQuoteError("");
     setMapError("");
+  };
+
+  const handleSelectSavedAddress = (savedAddress: SavedAddress): void => {
+    setAddressQuery([savedAddress.addressLine1, savedAddress.addressLine2].filter(Boolean).join(", "));
+    setCity(savedAddress.city);
+    setPincode(savedAddress.pincode);
+    setMobileNumber(savedAddress.phone);
+    setSelectedAddress(
+      savedAddress.latitude != null && savedAddress.longitude != null
+        ? {
+            id: `saved-${savedAddress.id}`,
+            address: savedAddress.formattedAddress,
+            secondaryText: savedAddress.label,
+            city: savedAddress.city,
+            pincode: savedAddress.pincode,
+            latitude: savedAddress.latitude,
+            longitude: savedAddress.longitude,
+          }
+        : null,
+    );
+    setAddressSuggestions([]);
+    setDeliveryQuote(null);
+    setAddressSearchError("");
+    setDeliveryQuoteError("");
+    setMapError("");
+  };
+
+  const handleUseCurrentLocation = async (): Promise<void> => {
+    if (!("geolocation" in navigator)) {
+      setMapError("This browser does not support current location.");
+      return;
+    }
+
+    setLocatingCurrentPosition(true);
+    setMapError("");
+    setAddressSearchError("");
+    setDeliveryQuote(null);
+    setDeliveryQuoteError("");
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const nextPosition = {
+          lat: position.coords.latitude,
+          lng: position.coords.longitude,
+        };
+
+        try {
+          await handlePickCustomerLocation(nextPosition);
+        } catch {
+          setSelectedAddress({
+            id: `gps-${nextPosition.lat}-${nextPosition.lng}`,
+            address: "Current location",
+            secondaryText: "Location captured from browser",
+            city,
+            pincode,
+            latitude: nextPosition.lat,
+            longitude: nextPosition.lng,
+          });
+        } finally {
+          setLocatingCurrentPosition(false);
+        }
+      },
+      (issue) => {
+        const errorMessage =
+          issue.code === issue.PERMISSION_DENIED
+            ? "Location permission was denied."
+            : issue.code === issue.POSITION_UNAVAILABLE
+            ? "Current location is unavailable right now."
+            : issue.code === issue.TIMEOUT
+            ? "Current location request timed out."
+            : "Unable to read your current location.";
+        setMapError(errorMessage);
+        setLocatingCurrentPosition(false);
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 12_000,
+        maximumAge: 60_000,
+      },
+    );
   };
 
   const handlePickCustomerLocation = async (position: LatLng): Promise<void> => {
@@ -240,6 +410,8 @@ export function CartPage(): JSX.Element {
       id: `map-${position.lat}-${position.lng}`,
       address: addressQuery.trim() || "Selected map pin",
       secondaryText: "Resolving selected pin...",
+      city,
+      pincode,
       latitude: position.lat,
       longitude: position.lng,
     });
@@ -250,10 +422,14 @@ export function CartPage(): JSX.Element {
         id: `map-${result.latitude}-${result.longitude}`,
         address: result.address,
         secondaryText: "Selected from map",
+        city: result.city,
+        pincode: result.pincode,
         latitude: result.latitude,
         longitude: result.longitude,
       });
       setAddressQuery(result.address);
+      setCity(result.city);
+      setPincode(result.pincode);
     } catch (issue) {
       setMapError(issue instanceof Error ? issue.message : "Unable to resolve the selected map pin.");
     } finally {
@@ -267,7 +443,7 @@ export function CartPage(): JSX.Element {
       return;
     }
 
-    const addressToQuote = selectedAddress?.address ?? addressQuery.trim();
+    const addressToQuote = structuredQuery;
     if (!addressToQuote) {
       setDeliveryQuoteError("Select a delivery address first.");
       return;
@@ -287,10 +463,19 @@ export function CartPage(): JSX.Element {
         id: `quote-${quote.deliveryQuoteId}`,
         address: quote.normalizedAddress,
         secondaryText: "",
+        city,
+        pincode,
         latitude: quote.destinationLat,
         longitude: quote.destinationLng,
       });
-      setAddressQuery(quote.normalizedAddress);
+      const structuredQuote = extractStructuredLocation({
+        address: quote.normalizedAddress,
+        city,
+        pincode,
+      });
+      setAddressQuery(structuredQuote.addressLine);
+      setCity(structuredQuote.city);
+      setPincode(structuredQuote.pincode);
       setAddressSuggestions([]);
       setAddressSearchError("");
     } catch (issue) {
@@ -348,6 +533,8 @@ export function CartPage(): JSX.Element {
     try {
       await placeOrder({
         address: deliveryQuote.normalizedAddress,
+        city,
+        pincode,
         mobileNumber,
         deliveryTime,
         deliveryQuoteId: deliveryQuote.deliveryQuoteId,
@@ -582,19 +769,77 @@ export function CartPage(): JSX.Element {
                     <p className="mt-1 text-sm text-slate-500">Add the essentials so the order can be placed without delays.</p>
                   </div>
 
+                  {savedAddresses.length ? (
+                    <div className="rounded-[24px] border border-[#eadfce] bg-[#fcfaf6] p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-medium text-ink">Saved addresses</p>
+                          <p className="mt-1 text-sm text-slate-500">Reuse a previous delivery address, then adjust the pin if needed.</p>
+                        </div>
+                      </div>
+                      <div className="mt-4 grid gap-3">
+                        {savedAddresses.map((savedAddress) => (
+                          <button
+                            key={savedAddress.id}
+                            type="button"
+                            onClick={() => handleSelectSavedAddress(savedAddress)}
+                            className="rounded-[18px] border border-transparent bg-white px-4 py-3 text-left transition hover:border-brand-200 hover:bg-brand-50"
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <p className="text-sm font-semibold text-ink">{savedAddress.label}</p>
+                              {savedAddress.isDefault ? (
+                                <span className="rounded-full bg-brand-100 px-3 py-1 text-xs font-semibold text-brand-700">Default</span>
+                              ) : null}
+                            </div>
+                            <p className="mt-1 text-sm text-slate-600">{savedAddress.formattedAddress}</p>
+                            <p className="mt-1 text-xs text-slate-500">{savedAddress.phone}</p>
+                          </button>
+                        ))}
+                      </div>
+                      {savedAddressesError ? <p className="mt-3 text-xs text-rose-500">{savedAddressesError}</p> : null}
+                    </div>
+                  ) : savedAddressesError ? (
+                    <p className="text-xs text-rose-500">{savedAddressesError}</p>
+                  ) : null}
+
                   <label className="field">
                     <span>Delivery address</span>
                     <input
                       value={addressQuery}
                       onChange={(event) => handleAddressInputChange(event.target.value)}
                       className="input"
-                      placeholder="Search house / flat, street, area, landmark"
+                      placeholder="House / flat, street, area, landmark"
                       required
                     />
                     {checkoutFieldErrors.address ? <p className="text-xs text-rose-500">{checkoutFieldErrors.address}</p> : null}
                   </label>
 
-                  {searchingAddresses ? <p className="text-xs text-slate-500">Searching TomTom addresses...</p> : null}
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <label className="field">
+                      <span>City</span>
+                      <input
+                        value={city}
+                        onChange={(event) => handleCityInputChange(event.target.value)}
+                        className="input"
+                        placeholder="Tirupati"
+                      />
+                      {checkoutFieldErrors.city ? <p className="text-xs text-rose-500">{checkoutFieldErrors.city}</p> : null}
+                    </label>
+
+                    <label className="field">
+                      <span>Pincode</span>
+                      <input
+                        value={pincode}
+                        onChange={(event) => handlePincodeInputChange(event.target.value)}
+                        className="input"
+                        inputMode="numeric"
+                        placeholder="517502"
+                      />
+                      {checkoutFieldErrors.pincode ? <p className="text-xs text-rose-500">{checkoutFieldErrors.pincode}</p> : null}
+                    </label>
+                  </div>
+
+                  {searchingAddresses ? <p className="text-xs text-slate-500">Searching delivery addresses...</p> : null}
                   {addressSearchError ? <p className="text-xs text-rose-500">{addressSearchError}</p> : null}
                   {addressSuggestions.length ? (
                     <div className="space-y-2 rounded-[24px] border border-[#eadfce] bg-white p-3">
@@ -619,29 +864,40 @@ export function CartPage(): JSX.Element {
                       <div>
                         <p className="text-sm font-medium text-ink">Refine delivery pin</p>
                         <p className="mt-1 text-sm text-slate-500">
-                          Search first, then click or drag the pin on the map to lock the exact delivery spot.
+                          Add address line, city, and pincode for better matches, then click or drag the pin to lock the exact delivery spot.
                         </p>
                       </div>
-                      {resolvingMapPin ? <p className="text-xs text-slate-500">Resolving pin...</p> : null}
-                    </div>
-                    {canShowMap ? (
-                      <div className="mt-4 space-y-3">
-                        <PinLocationMap
-                          center={mapCenter}
-                          marker={currentMapPosition}
-                          onPick={(position) => {
-                            void handlePickCustomerLocation(position);
+                      <div className="flex flex-col items-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void handleUseCurrentLocation();
                           }}
-                        />
-                        <p className="text-xs text-slate-500">
-                          Click anywhere on the map or drag the marker to improve routing accuracy.
-                        </p>
+                          disabled={locatingCurrentPosition}
+                          className="rounded-full border border-brand-200 bg-white px-4 py-2 text-xs font-semibold text-brand-700 transition hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {locatingCurrentPosition ? "Locating..." : "Use my current location"}
+                        </button>
+                        {resolvingMapPin ? <p className="text-xs text-slate-500">Resolving pin...</p> : null}
                       </div>
-                    ) : (
-                      <p className="mt-4 text-sm text-amber-700">
-                        Add `VITE_TOMTOM_API_KEY` or `NEXT_PUBLIC_TOMTOM_API_KEY` to enable in-browser map pinning.
+                    </div>
+                    <div className="mt-4 space-y-3">
+                      <PinLocationMap
+                        center={mapCenter}
+                        marker={currentMapPosition}
+                        onPick={(position) => {
+                          void handlePickCustomerLocation(position);
+                        }}
+                      />
+                      <p className="text-xs text-slate-500">
+                        Click anywhere on the map or drag the marker to improve routing accuracy.
                       </p>
-                    )}
+                      {!canShowMap ? (
+                        <p className="text-xs text-amber-700">
+                          Add a browser geocoding key like `VITE_LOCATIONIQ_API_KEY` or `VITE_TOMTOM_API_KEY` to auto-fill the address after pinning.
+                        </p>
+                      ) : null}
+                    </div>
                     {mapError ? <p className="mt-3 text-xs text-rose-500">{mapError}</p> : null}
                   </div>
 
@@ -656,14 +912,17 @@ export function CartPage(): JSX.Element {
                       <button
                         type="button"
                         onClick={() => void handleQuoteDelivery()}
-                        disabled={quotingDelivery || !addressQuery.trim() || hasMultiShopSelection}
+                        disabled={quotingDelivery || !structuredQuery.trim() || hasMultiShopSelection}
                         className="soft-button disabled:cursor-not-allowed disabled:opacity-60"
                       >
                         {quotingDelivery ? "Calculating..." : "Calculate delivery"}
                       </button>
                     </div>
                     {selectedAddress ? (
-                      <p className="mt-4 text-sm text-slate-600">Selected address: {selectedAddress.address}</p>
+                      <p className="mt-4 text-sm text-slate-600">
+                        Selected address: {selectedAddress.address}
+                        {selectedAddress.secondaryText ? ` (${selectedAddress.secondaryText})` : ""}
+                      </p>
                     ) : null}
                     {deliveryQuote ? (
                       <div className="mt-4 rounded-[18px] border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">

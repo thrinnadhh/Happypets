@@ -1,7 +1,8 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { NavLink } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
 import { getCategoryPath, productCategories } from "@/data/catalog";
 import { CloseIcon } from "@/components/common/Icons";
+import { useAuth } from "@/contexts/AuthContext";
 
 export function CustomerSidebar({
   open,
@@ -10,6 +11,9 @@ export function CustomerSidebar({
   open: boolean;
   onClose: () => void;
 }): JSX.Element {
+  const { logout, user } = useAuth();
+  const navigate = useNavigate();
+
   return (
     <AnimatePresence>
       {open ? (
@@ -61,6 +65,24 @@ export function CustomerSidebar({
                   <p className="text-sm font-semibold text-ink">{category}</p>
                 </NavLink>
               ))}
+            </div>
+
+            <div className="mt-auto rounded-[24px] border border-[#e7d8c1] bg-white/80 p-4 shadow-soft">
+              <div>
+                <p className="text-sm font-semibold text-ink">{user?.name}</p>
+                <p className="text-xs text-slate-500">{user?.email}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  logout();
+                  onClose();
+                  navigate("/login");
+                }}
+                className="mt-4 w-full rounded-2xl bg-[#2F4F6F] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#243A52]"
+              >
+                Logout
+              </button>
             </div>
           </motion.aside>
         </>
