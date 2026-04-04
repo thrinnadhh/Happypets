@@ -133,6 +133,7 @@ export function CartPage(): JSX.Element {
   const [cartActionError, setCartActionError] = useState("");
   const [placingOrder, setPlacingOrder] = useState(false);
   const [busyItemId, setBusyItemId] = useState<string | null>(null);
+  const visibleSavedAddresses = useMemo(() => savedAddresses.slice(0, 3), [savedAddresses]);
 
   const selectedCount = useMemo(() => items.filter((item) => item.selected).length, [items]);
   const selectedShopIds = useMemo(
@@ -771,7 +772,7 @@ export function CartPage(): JSX.Element {
                     <p className="mt-1 text-sm text-slate-500">Add the essentials so the order can be placed without delays.</p>
                   </div>
 
-                  {savedAddresses.length ? (
+                  {visibleSavedAddresses.length ? (
                     <div className="rounded-[24px] border border-[#eadfce] bg-[#fcfaf6] p-4">
                       <div className="flex items-center justify-between gap-3">
                         <div>
@@ -780,7 +781,7 @@ export function CartPage(): JSX.Element {
                         </div>
                       </div>
                       <div className="mt-4 grid gap-3">
-                        {savedAddresses.map((savedAddress) => (
+                        {visibleSavedAddresses.map((savedAddress) => (
                           <button
                             key={savedAddress.id}
                             type="button"
