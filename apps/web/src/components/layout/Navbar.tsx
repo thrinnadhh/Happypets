@@ -22,16 +22,38 @@ export function Navbar(): JSX.Element {
   const navigate = useNavigate();
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [isVisible, setIsVisible] = useState(true);
 
   useEffect(() => {
     setSidebarOpen(false);
   }, [location.pathname]);
 
+  useEffect(() => {
+    let lastScrollY = window.scrollY;
+
+    const handleScroll = (): void => {
+      const currentScrollY = window.scrollY;
+      const nearTop = currentScrollY < 24;
+
+      if (nearTop || currentScrollY < lastScrollY) {
+        setIsVisible(true);
+      } else if (currentScrollY > lastScrollY && currentScrollY > 80) {
+        setIsVisible(false);
+      }
+
+      lastScrollY = currentScrollY;
+    };
+
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, []);
+
   return (
     <>
       <motion.header
         initial={{ opacity: 0, y: -12 }}
-        animate={{ opacity: 1, y: 0 }}
+        animate={{ opacity: isVisible ? 1 : 0, y: isVisible ? 0 : -120 }}
+        transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
         className="sticky top-0 z-20 border-b border-white/50 bg-[#f8f1e6]/88 backdrop-blur-xl"
       >
         <div className="mx-auto flex max-w-[1500px] flex-col gap-4 px-4 py-4 md:px-6 xl:flex-row xl:items-center xl:justify-between">

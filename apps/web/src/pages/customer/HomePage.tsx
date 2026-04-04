@@ -144,7 +144,7 @@ function BannerSlider({ banners }: { banners: Banner[] }): JSX.Element {
       </AnimatePresence>
       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 p-4 sm:p-5 md:p-8">
         {banners.length > 1 ? (
-          <div className="pointer-events-auto flex flex-wrap items-center justify-between gap-3">
+          <div className="pointer-events-auto flex justify-center">
             <div className="flex gap-2 rounded-full bg-[#102232]/35 px-3 py-2 backdrop-blur-md">
               {banners.map((banner, index) => (
                 <button
@@ -157,22 +157,6 @@ function BannerSlider({ banners }: { banners: Banner[] }): JSX.Element {
                   aria-label={`Go to banner ${banner.position}`}
                 />
               ))}
-            </div>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={goToPrevious}
-                className="rounded-full border border-white/20 bg-[#102232]/35 px-3 py-2 text-xs font-semibold text-white backdrop-blur-md transition hover:bg-[#102232]/55 md:px-4"
-              >
-                Previous
-              </button>
-              <button
-                type="button"
-                onClick={goToNext}
-                className="rounded-full border border-white/20 bg-[#102232]/35 px-3 py-2 text-xs font-semibold text-white backdrop-blur-md transition hover:bg-[#102232]/55 md:px-4"
-              >
-                Next
-              </button>
             </div>
           </div>
         ) : null}
