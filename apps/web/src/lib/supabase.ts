@@ -235,6 +235,16 @@ type SearchDeliveryAddressesResponse = {
   suggestions: DeliveryAddressSuggestion[];
 };
 
+type ReverseGeocodeLocationResponse = {
+  id: string;
+  address: string;
+  secondaryText: string;
+  city: string;
+  pincode: string;
+  latitude: number;
+  longitude: number;
+};
+
 const IMAGE_MIME_TYPES: Record<string, string> = {
   avif: "image/avif",
   gif: "image/gif",
@@ -2487,6 +2497,35 @@ export async function searchDeliveryAddressesInSupabase(query: string): Promise<
   }
 
   return data?.suggestions ?? [];
+}
+
+export async function reverseGeocodeLocationInSupabase(input: {
+  lat: number;
+  lng: number;
+}): Promise<ReverseGeocodeLocationResponse> {
+  const client = requireSupabaseClient();
+  const authUser = await getCurrentAuthUser();
+
+  if (!authUser) {
+    throw new Error("Sign in to resolve pinned delivery locations.");
+  }
+
+  const { data, error } = await client.functions.invoke<ReverseGeocodeLocationResponse>(
+    "reverse-geocode-location",
+    {
+      body: input,
+    },
+  );
+
+  if (error) {
+    throw new Error(await extractFunctionErrorMessage(error, "Unable to identify the selected map pin."));
+  }
+
+  if (!data) {
+    throw new Error("Unable to identify the selected map pin.");
+  }
+
+  return data;
 }
 
 export async function fetchSavedAddressesFromSupabase(): Promise<SavedAddress[]> {

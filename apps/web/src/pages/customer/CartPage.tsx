@@ -8,14 +8,17 @@ import { PageTransition } from "@/components/common/PageTransition";
 import { Navbar } from "@/components/layout/Navbar";
 import { useCart } from "@/contexts/CartContext";
 import { calculateDiscountedPrice, formatInr, isProductExpired } from "@/lib/commerce";
-import { fetchSavedAddressesFromSupabase, quoteDeliveryInSupabase, searchDeliveryAddressesInSupabase } from "@/lib/supabase";
+import {
+  fetchSavedAddressesFromSupabase,
+  quoteDeliveryInSupabase,
+  reverseGeocodeLocationInSupabase,
+  searchDeliveryAddressesInSupabase,
+} from "@/lib/supabase";
 import {
   LatLng,
   buildLocationQuery,
   extractStructuredLocation,
   getDefaultIndiaCenter,
-  hasTomTomPublicKey,
-  reverseGeocodeTomTom,
 } from "@/lib/tomtom";
 import { DeliveryAddressSuggestion, DeliveryQuote, SavedAddress } from "@/types";
 
@@ -145,7 +148,6 @@ export function CartPage(): JSX.Element {
     [items],
   );
   const hasMultiShopSelection = selectedShopIds.length > 1;
-  const canShowMap = hasTomTomPublicKey();
   const selectedCartKey = useMemo(
     () =>
       items
@@ -417,7 +419,7 @@ export function CartPage(): JSX.Element {
     });
 
     try {
-      const result = await reverseGeocodeTomTom(position);
+      const result = await reverseGeocodeLocationInSupabase(position);
       setSelectedAddress({
         id: `map-${result.latitude}-${result.longitude}`,
         address: result.address,
@@ -892,11 +894,9 @@ export function CartPage(): JSX.Element {
                       <p className="text-xs text-slate-500">
                         Click anywhere on the map or drag the marker to improve routing accuracy.
                       </p>
-                      {!canShowMap ? (
-                        <p className="text-xs text-amber-700">
-                          Add a browser geocoding key like `VITE_LOCATIONIQ_API_KEY` or `VITE_TOMTOM_API_KEY` to auto-fill the address after pinning.
-                        </p>
-                      ) : null}
+                      <p className="text-xs text-slate-500">
+                        The pinned location is resolved securely through the backend, so no browser map key is required here.
+                      </p>
                     </div>
                     {mapError ? <p className="mt-3 text-xs text-rose-500">{mapError}</p> : null}
                   </div>

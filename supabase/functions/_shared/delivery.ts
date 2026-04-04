@@ -125,6 +125,21 @@ type TomTomRouteApiResponse = {
   }>;
 };
 
+type TomTomReverseGeocodeApiResponse = {
+  addresses?: Array<{
+    address?: {
+      freeformAddress?: string;
+      municipality?: string;
+      countrySubdivision?: string;
+      postalCode?: string;
+    };
+    position?: {
+      lat?: number;
+      lon?: number;
+    };
+  }>;
+};
+
 type LocationIqAddressResult = {
   place_id?: string | number;
   display_name?: string;
@@ -148,6 +163,7 @@ type LocationIqDirectionsResponse = {
 };
 
 const ADDRESS_SEARCH_CACHE_TTL_SECONDS = 60 * 10;
+const REVERSE_GEOCODE_CACHE_TTL_SECONDS = 60 * 30;
 const ROUTE_CACHE_TTL_SECONDS = 60 * 10;
 
 function isMissingColumnError(issue: unknown, columns: string[]): boolean {
@@ -522,6 +538,110 @@ export async function geocodeAddressWithTomTom(address: string): Promise<TomTomA
   }
 
   return match;
+}
+
+export async function reverseGeocodeCoordinates(
+  latitude: number,
+  longitude: number,
+): Promise<TomTomAddressResult> {
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    throw new HttpError(400, "Selected location is invalid.");
+  }
+
+  const provider = useLocationIq() ? "locationiq" : "tomtom";
+  const cacheKey = buildCacheKey("delivery:reverse-geocode", [
+    provider,
+    latitude.toFixed(6),
+    longitude.toFixed(6),
+  ]);
+  const cachedResult = await getCachedJson<TomTomAddressResult>(cacheKey);
+  if (cachedResult) {
+    return cachedResult;
+  }
+
+  if (useLocationIq()) {
+    const key = getLocationIqApiKey();
+    const url = new URL("https://us1.locationiq.com/v1/reverse");
+    url.searchParams.set("key", key);
+    url.searchParams.set("lat", String(latitude));
+    url.searchParams.set("lon", String(longitude));
+    url.searchParams.set("format", "json");
+    url.searchParams.set("normalizeaddress", "1");
+
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new HttpError(502, "Unable to identify the selected location.", { expose: false });
+    }
+
+    const payload = await response.json() as LocationIqAddressResult;
+    const address = payload.display_name?.trim() ?? "";
+    const city = payload.address?.city?.trim() ??
+      payload.address?.town?.trim() ??
+      payload.address?.village?.trim() ??
+      payload.address?.county?.trim() ??
+      "";
+    const state = payload.address?.state?.trim() ?? "";
+    const pincode = payload.address?.postcode?.trim() ?? "";
+    const resolvedLat = Number(payload.lat ?? latitude);
+    const resolvedLng = Number(payload.lon ?? longitude);
+
+    if (!address || !Number.isFinite(resolvedLat) || !Number.isFinite(resolvedLng)) {
+      throw new HttpError(400, "We could not derive an address from that map pin.");
+    }
+
+    const result = {
+      id: String(payload.place_id ?? `${resolvedLat},${resolvedLng}`),
+      address,
+      secondaryText: [city, state, pincode].filter(Boolean).join(", "),
+      city,
+      pincode,
+      latitude: resolvedLat,
+      longitude: resolvedLng,
+    };
+
+    await setCachedJson(cacheKey, result, REVERSE_GEOCODE_CACHE_TTL_SECONDS);
+    return result;
+  }
+
+  const key = getTomTomApiKey();
+  const url = new URL(
+    `https://api.tomtom.com/search/2/reverseGeocode/${latitude},${longitude}.json`,
+  );
+  url.searchParams.set("key", key);
+  url.searchParams.set("language", "en-GB");
+  url.searchParams.set("view", "IN");
+  url.searchParams.set("radius", "200");
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new HttpError(502, "Unable to identify the selected location.", { expose: false });
+  }
+
+  const payload = await response.json() as TomTomReverseGeocodeApiResponse;
+  const match = payload.addresses?.[0];
+  const address = match?.address?.freeformAddress?.trim() ?? "";
+  const city = match?.address?.municipality?.trim() ?? "";
+  const state = match?.address?.countrySubdivision?.trim() ?? "";
+  const pincode = match?.address?.postalCode?.trim() ?? "";
+  const resolvedLat = Number(match?.position?.lat ?? latitude);
+  const resolvedLng = Number(match?.position?.lon ?? longitude);
+
+  if (!address || !Number.isFinite(resolvedLat) || !Number.isFinite(resolvedLng)) {
+    throw new HttpError(400, "We could not derive an address from that map pin.");
+  }
+
+  const result = {
+    id: `${resolvedLat},${resolvedLng}`,
+    address,
+    secondaryText: [city, state, pincode].filter(Boolean).join(", "),
+    city,
+    pincode,
+    latitude: resolvedLat,
+    longitude: resolvedLng,
+  };
+
+  await setCachedJson(cacheKey, result, REVERSE_GEOCODE_CACHE_TTL_SECONDS);
+  return result;
 }
 
 export async function calculateRouteWithTomTom(

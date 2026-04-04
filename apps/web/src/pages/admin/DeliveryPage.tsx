@@ -7,6 +7,7 @@ import { Sidebar } from "@/components/layout/Sidebar";
 import { useAuth } from "@/contexts/AuthContext";
 import {
   fetchAdminDeliveryConfigFromSupabase,
+  reverseGeocodeLocationInSupabase,
   searchDeliveryAddressesInSupabase,
   upsertAdminDeliveryConfigInSupabase,
 } from "@/lib/supabase";
@@ -16,8 +17,6 @@ import {
   buildLocationQuery,
   extractStructuredLocation,
   getDefaultIndiaCenter,
-  hasTomTomPublicKey,
-  reverseGeocodeTomTom,
 } from "@/lib/tomtom";
 import { AdminDeliveryConfig, DeliveryAddressSuggestion } from "@/types";
 
@@ -181,7 +180,6 @@ export function AdminDeliveryPage(): JSX.Element {
 
   const formErrors = useMemo(() => (form ? validateForm(form) : {}), [form]);
   const hasFormErrors = Object.keys(formErrors).length > 0;
-  const canResolvePinnedAddress = hasTomTomPublicKey();
   const currentMapPosition: LatLng | null = useMemo(() => {
     if (!form) {
       return null;
@@ -235,11 +233,6 @@ export function AdminDeliveryPage(): JSX.Element {
       return;
     }
 
-    if (!canResolvePinnedAddress) {
-      setMapError("Add a browser geocoding key like VITE_LOCATIONIQ_API_KEY or VITE_TOMTOM_API_KEY to resolve a clicked pin into an address.");
-      return;
-    }
-
     setResolvingMapPin(true);
     setMapError("");
     setOriginSearchError("");
@@ -255,7 +248,7 @@ export function AdminDeliveryPage(): JSX.Element {
         : current);
 
     try {
-      const result = await reverseGeocodeTomTom(position);
+      const result = await reverseGeocodeLocationInSupabase(position);
       setForm((current) =>
         current
           ? {
@@ -433,11 +426,9 @@ export function AdminDeliveryPage(): JSX.Element {
                         <p className="text-xs text-slate-500">
                           Click the map or drag the marker to set the exact dispatch point.
                         </p>
-                        {!canResolvePinnedAddress ? (
-                          <p className="text-xs text-amber-700">
-                            Add a browser geocoding key like `VITE_LOCATIONIQ_API_KEY` or `VITE_TOMTOM_API_KEY` to auto-fill the address after pinning.
-                          </p>
-                        ) : null}
+                        <p className="text-xs text-slate-500">
+                          Pinned locations are resolved through the backend using the secured provider key.
+                        </p>
                       </div>
                       {mapError ? <p className="mt-3 text-xs text-rose-500">{mapError}</p> : null}
                     </div>

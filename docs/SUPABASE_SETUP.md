@@ -79,22 +79,11 @@ The Edge Functions now use only the private server-side map keys above. They no 
 
 If Upstash Redis secrets are present, delivery address search and external routing/geocoding calls are cached in the Edge Functions to reduce repeated provider requests.
 
-## Browser-side TomTom map pinning
+## Map pinning
 
 The admin delivery settings page and the customer checkout page now support map pin selection.
 
-To enable that UI in the Vite app, add one of these repo-root variables to `.env.local`:
-
-- `VITE_TOMTOM_API_KEY`
-- `NEXT_PUBLIC_TOMTOM_API_KEY`
-- `VITE_LOCATIONIQ_API_KEY`
-- `NEXT_PUBLIC_LOCATIONIQ_API_KEY`
-
-This browser-visible key is used only for:
-
-- reverse geocoding a clicked or dragged pin into a readable address
-
-The visible map tiles now render independently in the browser, so this key is only needed when you want a clicked pin to auto-fill a readable address, city, and pincode.
+The visible map tiles render directly in the browser, while clicked or dragged pins are reverse-geocoded through the secured Supabase Edge Functions. No browser-visible TomTom or LocationIQ key is required for that flow anymore.
 
 The server-side delivery quote and route pricing still use the Supabase Edge Function secret:
 
@@ -109,7 +98,6 @@ Before deploying:
    - `VITE_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_URL`
    - `VITE_SUPABASE_ANON_KEY` / `NEXT_PUBLIC_SUPABASE_ANON_KEY`
    - `VITE_RAZORPAY_KEY_ID` / `NEXT_PUBLIC_RAZORPAY_KEY_ID`
-   - optional browser geocoding key such as `VITE_TOMTOM_API_KEY`
 2. Keep these server-only:
    - `SUPABASE_SERVICE_ROLE_KEY`
    - `RAZORPAY_KEY_SECRET`
