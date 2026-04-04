@@ -71,7 +71,7 @@ export function Navbar(): JSX.Element {
           </div>
 
           <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:gap-6">
-            <nav className="flex flex-wrap items-center gap-2 rounded-full bg-white/78 p-1 shadow-soft">
+            <nav className="hidden flex-wrap items-center gap-2 rounded-full bg-white/78 p-1 shadow-soft xl:flex">
               {links.map((link) => (
                 <NavLink
                   key={link.to}

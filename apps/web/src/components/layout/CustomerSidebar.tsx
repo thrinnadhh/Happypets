@@ -4,6 +4,11 @@ import { getCategoryPath, productCategories } from "@/data/catalog";
 import { CloseIcon } from "@/components/common/Icons";
 import { useAuth } from "@/contexts/AuthContext";
 
+const quickLinks = [
+  { to: "/customer/home", label: "Home" },
+  { to: "/customer/support", label: "Support" },
+];
+
 export function CustomerSidebar({
   open,
   onClose,
@@ -49,6 +54,30 @@ export function CustomerSidebar({
             </div>
 
             <div className="mt-5 space-y-3 overflow-y-auto pr-1">
+              <div className="rounded-[24px] border border-[#e7d8c1] bg-white/78 p-3 shadow-soft">
+                <p className="px-2 text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">
+                  Quick Links
+                </p>
+                <div className="mt-2 space-y-2">
+                  {quickLinks.map((link) => (
+                    <NavLink
+                      key={link.to}
+                      to={link.to}
+                      onClick={onClose}
+                      className={({ isActive }) =>
+                        `block rounded-[18px] px-4 py-3 text-sm font-semibold transition ${
+                          isActive
+                            ? "bg-[#2f4f6f] text-white shadow-[0_14px_26px_rgba(47,79,111,0.18)]"
+                            : "bg-[#f8f3eb] text-ink hover:bg-white"
+                        }`
+                      }
+                    >
+                      {link.label}
+                    </NavLink>
+                  ))}
+                </div>
+              </div>
+
               {productCategories.map((category) => (
                 <NavLink
                   key={category}
