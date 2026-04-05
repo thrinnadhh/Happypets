@@ -238,10 +238,9 @@ export function ProductDetailPage(): JSX.Element {
                       setCartError(issue instanceof Error ? issue.message : "Unable to add this product to cart.");
                     });
                 }}
-                className="primary-button bg-[#2F4F6F] px-7 py-3 text-white disabled:cursor-not-allowed disabled:opacity-60"
-                style={{ backgroundImage: "none" }}
+                className="rounded-full bg-[#20b2aa] px-8 py-3 font-semibold text-white transition hover:bg-[#1a8f8d] disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {isExpired ? "Expired" : isOutOfStock ? "Out of Stock" : "Add to Cart"}
+                {isExpired ? "Expired" : isOutOfStock ? "Out of Stock" : "🛒 Add to Cart"}
               </motion.button>
               <span className="text-sm text-slate-500">
                 In cart: {getItemQuantity(product.id)}

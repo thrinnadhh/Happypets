@@ -9,6 +9,7 @@ import { FavoritesPage } from "@/pages/customer/FavoritesPage";
 import { CustomerHomePage } from "@/pages/customer/HomePage";
 import { OrdersPage } from "@/pages/customer/OrdersPage";
 import { ProductDetailPage } from "@/pages/customer/ProductDetailPage";
+import { ProfilePage } from "@/pages/customer/ProfilePage";
 import { SupportPage } from "@/pages/customer/SupportPage";
 import { AdminBannersPage } from "@/pages/admin/BannersPage";
 import { AdminCouponsPage } from "@/pages/admin/CouponsPage";
@@ -100,6 +101,14 @@ export default function App(): JSX.Element {
           element={
             <ProtectedRoute allowedRoles={["customer"]}>
               <SupportPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/profile"
+          element={
+            <ProtectedRoute allowedRoles={["customer"]}>
+              <ProfilePage />
             </ProtectedRoute>
           }
         />

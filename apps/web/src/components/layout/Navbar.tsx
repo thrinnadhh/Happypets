@@ -12,6 +12,7 @@ const links = [
   { to: "/cart", label: "Cart" },
   { to: "/orders", label: "Orders" },
   { to: "/favorites", label: "Favorites" },
+  { to: "/profile", label: "Profile" },
   { to: "/customer/support", label: "Support" },
 ];
 
@@ -116,10 +117,17 @@ export function Navbar(): JSX.Element {
                 <FavoritesButton count={favorites.length} />
                 <CartButton count={itemCount} />
               </div>
-              <div className="hidden text-right md:block">
+              <NavLink
+                to="/profile"
+                className={({ isActive }) =>
+                  `hidden rounded-lg px-3 py-2 text-right transition md:block ${
+                    isActive ? "bg-[#fef9f3]" : "hover:bg-[#fef9f3]"
+                  }`
+                }
+              >
                 <p className="text-sm font-semibold text-ink">{user?.name}</p>
                 <p className="text-xs text-slate-500">{user?.email}</p>
-              </div>
+              </NavLink>
             </div>
           </div>
         </div>

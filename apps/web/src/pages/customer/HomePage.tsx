@@ -108,10 +108,25 @@ function BannerSlider({ banners }: { banners: Banner[] }): JSX.Element {
 
   if (!banners.length) {
     return (
-      <section className="relative overflow-hidden rounded-[28px] bg-[#17324a] shadow-[0_28px_60px_rgba(23,50,74,0.28)] md:rounded-[34px]">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(212,175,55,0.28),transparent_34%),linear-gradient(155deg,rgba(255,255,255,0.05),transparent_46%)]" />
-        <div className="relative h-[220px] sm:h-[280px] md:h-[360px]">
-          <div className="absolute inset-0 bg-gradient-to-br from-[#17324a] via-[#274764] to-[#355b80]" />
+      <section className="relative overflow-hidden rounded-[28px] bg-gradient-to-br from-[#fbbf24] to-[#f59e0b] shadow-[0_28px_60px_rgba(251,191,36,0.28)] md:rounded-[34px]">
+        <div className="relative flex h-[280px] items-center justify-center px-6 sm:h-[340px] md:h-[420px]">
+          <div className="text-center">
+            <h1 className="font-heading text-4xl font-bold text-white sm:text-5xl md:text-6xl">
+              Playtime Just Got
+              <span className="block text-[#ff1744]">Bouncier!</span>
+            </h1>
+            <p className="mt-4 text-lg text-white/90">
+              Discover the most squeaky, durable, and fun toys for your furry best friends.
+            </p>
+            <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-center">
+              <Link to="/category/Dog" className="rounded-full bg-[#ff6b35] px-8 py-3 font-semibold text-white transition hover:bg-[#ff5520]">
+                Shop Collection
+              </Link>
+              <button className="rounded-full border-2 border-white bg-transparent px-8 py-3 font-semibold text-white transition hover:bg-white/10">
+                See Trends
+              </button>
+            </div>
+          </div>
         </div>
       </section>
     );

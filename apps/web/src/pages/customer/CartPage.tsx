@@ -980,8 +980,8 @@ export function CartPage(): JSX.Element {
                       </div>
                       <p className="text-2xl font-semibold text-ink">{formatInr(payableTotal)}</p>
                     </div>
-                    <button disabled={!canSubmitCheckout} className="primary-button mt-4 w-full justify-center disabled:cursor-not-allowed disabled:opacity-60">
-                      {placingOrder ? "Opening Razorpay..." : "Pay with Razorpay"}
+                    <button disabled={!canSubmitCheckout} className="mt-4 w-full rounded-full bg-[#ff6b35] py-3 font-semibold text-white transition hover:bg-[#ff5520] disabled:cursor-not-allowed disabled:opacity-60">
+                      {placingOrder ? "Opening Razorpay..." : "🛒 Checkout"}
                     </button>
                   </div>
                 </form>
