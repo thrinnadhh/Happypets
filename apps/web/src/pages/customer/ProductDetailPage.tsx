@@ -144,6 +144,9 @@ export function ProductDetailPage(): JSX.Element {
 
                 {/* Tags */}
                 <div className="mt-3 flex flex-wrap gap-2">
+                  <span className="rounded-lg border border-brand-200 bg-white px-3 py-1 text-xs font-bold text-brand-700">
+                    {product.productType}
+                  </span>
                   {product.lifeStage && (
                     <span className="rounded-lg bg-brand-50 px-3 py-1 text-xs font-bold text-brand-700">
                       {product.lifeStage}
@@ -261,10 +264,11 @@ export function ProductDetailPage(): JSX.Element {
           <div className="flex items-center justify-between gap-4">
             <div>
               <p className="text-xs font-bold uppercase tracking-widest text-brand-600">More Like This</p>
-              <h2 className="mt-1 text-xl font-extrabold text-ink">Related Products</h2>
+              <h2 className="mt-1 text-xl font-extrabold text-ink">
+                More {getCategoryLabel(product.category)} picks across other types
+              </h2>
             </div>
             <div className="flex gap-2">
-              <Link to="/customer/home" className="btn-secondary text-xs px-3 py-1.5">Continue Shopping</Link>
               <Link to={getCategoryPath(product.category)} className="btn-secondary text-xs px-3 py-1.5">
                 View All {getCategoryLabel(product.category)}
               </Link>
