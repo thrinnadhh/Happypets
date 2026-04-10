@@ -23,6 +23,7 @@ import { SuperAdminAnalyticsPage } from "@/pages/superadmin/AnalyticsPage";
 import { SuperAdminDashboardPage } from "@/pages/superadmin/DashboardPage";
 import { SuperAdminShopsPage } from "@/pages/superadmin/ShopsPage";
 import { RoleRedirect } from "@/components/common/RoleRedirect";
+import { trackEvent } from "@/lib/analytics.js";
 
 export default function App(): JSX.Element {
   const location = useLocation();
@@ -38,13 +39,11 @@ export default function App(): JSX.Element {
 
     lastTrackedPathRef.current = pagePath;
 
-    if (typeof window.gtag === "function") {
-      window.gtag("event", "page_view", {
-        page_title: document.title,
-        page_path: pagePath,
-        page_location: window.location.href,
-      });
-    }
+    trackEvent("page_view", {
+      page_title: document.title,
+      page_path: pagePath,
+      page_location: window.location.href,
+    });
   }, [location.hash, location.pathname, location.search]);
 
   return (

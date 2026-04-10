@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { getCorsHeaders, HttpError, logInternalError, timingSafeEqual } from "../_shared/cors.ts";
+import { trackGoogleAnalyticsEvent } from "../_shared/analytics.ts";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -93,6 +94,12 @@ serve(async (request) => {
       }
 
       if (event === "payment.failed") {
+        const { data: order } = await adminClient
+          .from("orders")
+          .select("id, user_id, total_inr")
+          .eq("razorpay_order_id", paymentEntity.order_id)
+          .maybeSingle();
+
         await adminClient
           .from("orders")
           .update({
@@ -100,6 +107,18 @@ serve(async (request) => {
             status: "cancelled",
           })
           .eq("razorpay_order_id", paymentEntity.order_id);
+
+        void trackGoogleAnalyticsEvent({
+          clientId: String(order?.user_id ?? paymentEntity.order_id),
+          userId: typeof order?.user_id === "string" ? order.user_id : null,
+          eventName: "order_failed",
+          params: {
+            transaction_id: order?.id ?? paymentEntity.order_id,
+            reason: "payment_failed",
+            value: Number(order?.total_inr ?? 0),
+            currency: "INR",
+          },
+        });
       }
     }
 

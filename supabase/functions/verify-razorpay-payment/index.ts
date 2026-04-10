@@ -10,6 +10,7 @@ import {
 } from "../_shared/cors.ts";
 import { getAuthenticatedUserFromRequest } from "../_shared/auth.ts";
 import { enforceRateLimit } from "../_shared/rate-limit.ts";
+import { trackGoogleAnalyticsEvent } from "../_shared/analytics.ts";
 import {
   assertShopCanFulfillCart,
   buildCartSignature,
@@ -521,6 +522,18 @@ serve(async (request) => {
       throw orderError;
     }
 
+    void trackGoogleAnalyticsEvent({
+      clientId: user.id,
+      userId: user.id,
+      eventName: "order_placed",
+      params: {
+        transaction_id: order.id,
+        value: total,
+        currency: "INR",
+        items: cartRows.length,
+      },
+    });
+
     const orderItems = cartRows.map((row) => {
       const product = getCartProduct(row);
       const unitPrice = calculateDiscountedPrice(Number(product?.price_inr ?? 0), product?.discount);
@@ -587,6 +600,17 @@ serve(async (request) => {
     const message = isHttpError(issue) && issue.expose
       ? issue.message
       : "Unable to verify the payment right now.";
+
+    if (status >= 500) {
+      void trackGoogleAnalyticsEvent({
+        clientId: user.id,
+        userId: user.id,
+        eventName: "order_failed",
+        params: {
+          reason: "backend_error",
+        },
+      });
+    }
     return withCors(request, jsonResponse({ error: message }, status));
   }
 });

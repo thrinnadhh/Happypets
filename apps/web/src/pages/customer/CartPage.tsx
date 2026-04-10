@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Link, useNavigate } from "react-router-dom";
 import { EmptyState } from "@/components/common/EmptyState";
@@ -20,6 +20,7 @@ import {
   extractStructuredLocation,
   getDefaultIndiaCenter,
 } from "@/lib/tomtom";
+import { trackEvent } from "@/lib/analytics.js";
 import { DeliveryAddressSuggestion, DeliveryQuote, SavedAddress } from "@/types";
 
 function mapCheckoutIssue(issue: unknown): { error: string; notice: string } {
@@ -94,6 +95,8 @@ function validateCheckoutFields(
 
 export function CartPage(): JSX.Element {
   const navigate = useNavigate();
+  const checkoutStartedRef = useRef(false);
+  const checkoutCompletedRef = useRef(false);
   const {
     items,
     loading,
@@ -230,6 +233,14 @@ export function CartPage(): JSX.Element {
   }, []);
 
   useEffect(() => {
+    return () => {
+      if (checkoutStartedRef.current && !checkoutCompletedRef.current) {
+        trackEvent("checkout_abandoned");
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     const normalizedQuery = structuredQuery.trim();
     const isSelectedAddress =
       Boolean(selectedAddress) &&
@@ -312,6 +323,7 @@ export function CartPage(): JSX.Element {
 
   const handleSelectAddress = (suggestion: DeliveryAddressSuggestion): void => {
     setSelectedAddress(suggestion);
+    trackEvent("location_selected", { city: suggestion.city });
     setAddressQuery(suggestion.address);
     setCity(suggestion.city);
     setPincode(suggestion.pincode);
@@ -323,6 +335,7 @@ export function CartPage(): JSX.Element {
   };
 
   const handleSelectSavedAddress = (savedAddress: SavedAddress): void => {
+    trackEvent("location_selected", { city: savedAddress.city });
     setAddressQuery([savedAddress.addressLine1, savedAddress.addressLine2].filter(Boolean).join(", "));
     setCity(savedAddress.city);
     setPincode(savedAddress.pincode);
@@ -430,6 +443,7 @@ export function CartPage(): JSX.Element {
         latitude: result.latitude,
         longitude: result.longitude,
       });
+      trackEvent("location_selected", { city: result.city });
       setAddressQuery(result.address);
       setCity(result.city);
       setPincode(result.pincode);
@@ -533,6 +547,11 @@ export function CartPage(): JSX.Element {
     setCheckoutError("");
     setCheckoutNotice("");
 
+    if (!checkoutStartedRef.current) {
+      checkoutStartedRef.current = true;
+      trackEvent("checkout_started");
+    }
+
     try {
       await placeOrder({
         address: deliveryQuote.normalizedAddress,
@@ -544,6 +563,7 @@ export function CartPage(): JSX.Element {
         destinationLat: deliveryQuote.destinationLat,
         destinationLng: deliveryQuote.destinationLng,
       });
+      checkoutCompletedRef.current = true;
       navigate("/customer/home");
     } catch (issue) {
       const result = mapCheckoutIssue(issue);

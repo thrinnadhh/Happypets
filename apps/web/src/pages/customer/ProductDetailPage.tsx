@@ -10,6 +10,7 @@ import { StarIcon } from "@/components/common/Icons";
 import { useCart } from "@/contexts/CartContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { useCatalog } from "@/contexts/CatalogContext";
+import { trackEvent } from "@/lib/analytics.js";
 
 const isDevelopment = import.meta.env.DEV;
 import { getCategoryLabel, getCategoryPath, productTagLabels, productTagStyles, sortTags } from "@/data/catalog";
@@ -76,6 +77,12 @@ export function ProductDetailPage(): JSX.Element {
     if (isDevelopment) console.log("[cart][frontend] add-to-cart click", payload);
     void addToCart(product.id, quantity)
       .then(() => {
+        trackEvent("add_to_cart", {
+          product_name: product.name,
+          price: discountedPrice,
+          currency: "INR",
+          items: quantity,
+        });
         if (isDevelopment) console.log("[cart][frontend] add-to-cart success", payload);
         setCartNotice(`${quantity} item${quantity > 1 ? "s" : ""} added to cart.`);
       })

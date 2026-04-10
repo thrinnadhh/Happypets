@@ -1,0 +1,1 @@
+export declare const trackEvent: (eventName: string, params?: Record<string, unknown>) => void;
